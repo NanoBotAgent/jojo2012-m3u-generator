@@ -38,8 +38,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: |
-          pip install requests tqdm
+        run: pip install requests tqdm
 
       - name: Download batch ZIP
         id: download
@@ -47,7 +46,6 @@ jobs:
           mkdir -p /tmp/jojo
           cd /tmp/jojo
 
-          # PixelDrain batch ZIP URLs
           declare -A urls=(
             ["360p"]="https://pixeldrain.com/api/file/ApBTtMCs"
             ["480p"]="https://pixeldrain.com/api/file/qmkbjjRz"
@@ -75,7 +73,6 @@ jobs:
           cd /tmp/jojo
           unzip -o "${{ steps.download.outputs.zip_path }}" -d episodes
 
-          # Find all video files
           find episodes -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" \) | sort | head -26 > video_files.txt
 
           count=$(wc -l < video_files.txt)
@@ -85,7 +82,6 @@ jobs:
             echo "::warning::Expected 26 episodes, found $count"
           fi
 
-          # Copy to workspace for release upload
           mkdir -p ${{ github.workspace }}/release_assets
           cp $(cat video_files.txt) ${{ github.workspace }}/release_assets/
 
@@ -100,11 +96,10 @@ jobs:
           RELEASE_TAG="jojo2012-${{ github.event.inputs.resolution }}-${{ github.run_number }}"
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/"
 
-          cat > jojo2012-${{ github.event.inputs.resolution }}.m3u << 'EOF'
-#EXTM3U
-EOF
+          m3u_file="jojo2012-${{ github.event.inputs.resolution }}.m3u"
 
-          # Episode mapping
+          echo "#EXTM3U" > "$m3u_file"
+
           ep=1
           for file in $(ls -1 release_assets/ | sort); do
             if [ $ep -le 9 ]; then
@@ -117,7 +112,7 @@ EOF
 
             url="${BASE_URL}${file}"
 
-            cat >> jojo2012-${{ github.event.inputs.resolution }}.m3u << EOE
+            cat >> "$m3u_file" << EOE
 #EXTINF:-1 tvg-id="jojo2012-${ep}" tvg-name="${part} - Episode ${ep_display}",${part} - Episode ${ep_display}
 ${url}
 EOE
@@ -127,7 +122,7 @@ EOE
 
           echo "Generated M3U with $((ep-1)) entries"
           echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
-          echo "m3u_file=jojo2012-${{ github.event.inputs.resolution }}.m3u" >> $GITHUB_OUTPUT
+          echo "m3u_file=${m3u_file}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: ${{ github.event.inputs.create_release == 'true' }}
@@ -145,8 +140,7 @@ EOE
             Downloaded from PixelDrain batch ZIP
             
             Generated on ${{ github.run_id }}
-          files: |
-            ${{ steps.extract.outputs.asset_dir }}/*
+          files: ${{ steps.extract.outputs.asset_dir }}/*
           draft: false
           prerelease: false
         env:
