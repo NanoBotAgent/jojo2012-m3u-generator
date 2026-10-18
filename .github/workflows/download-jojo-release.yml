@@ -37,33 +37,7 @@ jobs:
             resolution="720p"
           fi
 
-          cat > download.py << 'ENDOFSCRIPT'
-import os
-import json
-
-urls = {
-    '360p': 'https://pixeldrain.com/api/file/ApBTtMCs',
-    '480p': 'https://pixeldrain.com/api/file/qmkbjjRz',
-    '720p': 'https://pixeldrain.com/api/file/b5gcL8LM',
-}
-
-resolution = os.environ.get('JOJO_RESOLUTION', '720p')
-url = urls[resolution]
-filename = f'Alqanime_Jojo_BD_{resolution}.zip'
-
-print(f'Downloading {url}')
-import requests
-r = requests.get(url, stream=True, timeout=7200)
-r.raise_for_status()
-with open(filename, 'wb') as f:
-    for chunk in r.iter_content(chunk_size=8192):
-        f.write(chunk)
-size = os.path.getsize(filename)
-print(f'Downloaded {filename} ({size} bytes)')
-print(f'zip_path=/tmp/jojo/{filename}')
-ENDOFSCRIPT
-
-          JOJO_RESOLUTION="$resolution" python3 download.py >> $GITHUB_OUTPUT
+          JOJO_RESOLUTION="$resolution" python3 ${{ github.workspace }}/scripts/download_release.py >> $GITHUB_OUTPUT
 
       - name: Extract episodes
         id: extract
@@ -106,41 +80,7 @@ ENDOFSCRIPT
 
           echo "create_release=true" >> $GITHUB_OUTPUT
 
-          cat > generate_m3u.py << 'ENDOFSCRIPT'
-import os
-
-repo = os.environ.get('GITHUB_REPOSITORY', '')
-run_number = os.environ.get('GITHUB_RUN_NUMBER', '1')
-resolution = os.environ.get('JOJO_RESOLUTION', '720p')
-release_tag = f'jojo2012-{resolution}-{run_number}'
-base_url = f'https://github.com/{repo}/releases/download/{release_tag}/'
-
-m3u_file = f'jojo2012-{resolution}.m3u'
-asset_dir = os.environ.get('ASSET_DIR', 'release_assets')
-
-files = sorted(os.listdir(asset_dir))
-
-with open(m3u_file, 'w') as f:
-    f.write('#EXTM3U\n')
-    for i, filename in enumerate(files):
-        ep = i + 1
-        if ep <= 9:
-            part = 'Phantom Blood'
-            ep_display = f'{ep:02d}'
-        else:
-            part = 'Battle Tendency'
-            ep_display = f'{ep - 9:02d}'
-
-        url = base_url + filename
-        f.write(f'#EXTINF:-1 tvg-id="jojo2012-{ep}" tvg-name="{part} - Episode {ep_display}",{part} - Episode {ep_display}\n')
-        f.write(f'{url}\n')
-
-print(f'Generated M3U with {len(files)} entries')
-print(f'release_tag={release_tag}')
-print(f'm3u_file={m3u_file}')
-ENDOFSCRIPT
-
-          JOJO_RESOLUTION="$resolution" ASSET_DIR="${{ github.workspace }}/release_assets" python3 generate_m3u.py >> $GITHUB_OUTPUT
+          JOJO_RESOLUTION="$resolution" ASSET_DIR="${{ github.workspace }}/release_assets" python3 ${{ github.workspace }}/scripts/generate_release_m3u.py >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: ${{ steps.generate_m3u.outputs.create_release == 'true' }}
