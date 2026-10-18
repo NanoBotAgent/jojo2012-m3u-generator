@@ -1,0 +1,165 @@
+name: Download and Commit JoJo 2012 Videos
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_urls:
+        description: 'JSON array of video URLs for episodes 1-26 (or provide via repository variable VIDEO_URLS)'
+        required: false
+        type: string
+      commit_message:
+        description: 'Commit message'
+        required: false
+        default: 'Add JoJo 2012 720p videos and update M3U'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-commit:
+    name: Download Videos & Update M3U
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository with LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Install Git LFS
+        run: |
+          git lfs install
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure Git LFS tracking for video files
+        run: |
+          git lfs track "*.mp4"
+          git add .gitattributes
+
+      - name: Parse video URLs
+        id: parse_urls
+        run: |
+          if [ -n "${{ github.event.inputs.video_urls }}" ]; then
+            echo "${{ github.event.inputs.video_urls }}" > video_urls.json
+          elif [ -n "${{ vars.VIDEO_URLS }}" ]; then
+            echo "${{ vars.VIDEO_URLS }}" > video_urls.json
+          else
+            echo '[]' > video_urls.json
+            echo "::warning::No video URLs provided. Set VIDEO_URLS repository variable or provide via workflow_dispatch input."
+          fi
+          cat video_urls.json
+
+      - name: Download videos
+        id: download
+        run: |
+          mkdir -p videos
+          cd videos
+          
+          # Episode mapping: array index 0 = episode 1, etc.
+          # Expected JSON format: ["url1", "url2", ..., "url26"]
+          urls=$(cat ../video_urls.json | jq -r '.[]')
+          
+          episode=1
+          for url in $urls; do
+            if [ -z "$url" ] || [ "$url" = "null" ]; then
+              echo "Skipping empty URL for episode $episode"
+              ((episode++))
+              continue
+            fi
+            
+            # Determine filename pattern
+            if [ $episode -le 9 ]; then
+              part="Phantom Blood"
+              ep_num=$(printf "%02d" $episode)
+            else
+              part="Battle Tendency"
+              ep_num=$(printf "%02d" $((episode - 9)))
+            fi
+            
+            filename="Alqanime_Jojo_BD_${episode}_720p.mp4"
+            if [ $episode -eq 26 ]; then
+              filename="Alqanime_Jojo_BD_26_END_720p.mp4"
+            fi
+            
+            echo "Downloading episode $episode ($part Ep $ep_num) from $url"
+            echo "Saving as $filename"
+            
+            # Download with resume support and progress
+            curl -L -C - -o "$filename" "$url" --max-time 3600 --retry 3 --retry-delay 10
+            
+            if [ $? -eq 0 ] && [ -f "$filename" ] && [ -s "$filename" ]; then
+              size=$(stat -c%s "$filename")
+              echo "Downloaded $filename ($size bytes)"
+            else
+              echo "::error::Failed to download episode $episode"
+              exit 1
+            fi
+            
+            ((episode++))
+          done
+          
+          echo "videos_dir=videos" >> $GITHUB_OUTPUT
+
+      - name: Update M3U with GitHub raw URLs
+        id: update_m3u
+        run: |
+          cd ${{ steps.download.outputs.videos_dir }}
+          
+          # Generate new M3U content
+          cat > ../jojo2012-720p.m3u.new << 'EOF'
+#EXTM3U
+EOF
+          
+          for ep in {1..26}; do
+            if [ $ep -le 9 ]; then
+              part="Phantom Blood"
+              ep_display=$(printf "%02d" $ep)
+            else
+              part="Battle Tendency"
+              ep_display=$(printf "%02d" $((ep - 9)))
+            fi
+            
+            if [ $ep -eq 26 ]; then
+              filename="Alqanime_Jojo_BD_26_END_720p.mp4"
+            else
+              filename="Alqanime_Jojo_BD_${ep}_720p.mp4"
+            fi
+            
+            # GitHub raw URL for LFS files (uses media.githubusercontent.com for direct access)
+            # Note: For LFS files, raw URLs serve the LFS pointer, not the actual file.
+            # For direct video streaming, consider using GitHub Releases instead.
+            raw_url="https://media.githubusercontent.com/media/${{ github.repository }}/main/videos/${filename}"
+            
+            cat >> ../jojo2012-720p.m3u.new << EOE
+#EXTINF:-1 tvg-id="jojo2012-${ep}" tvg-name="${part} - Episode ${ep_display}",${part} - Episode ${ep_display}
+${raw_url}
+EOE
+          done
+          
+          mv ../jojo2012-720p.m3u.new ../jojo2012-720p.m3u
+          echo "Updated M3U with $(grep -c '^https://' ../jojo2012-720p.m3u) video entries"
+
+      - name: Commit changes
+        run: |
+          git add .gitattributes videos/*.mp4 jojo2012-720p.m3u
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "${{ github.event.inputs.commit_message }}"
+            git push origin main
+            echo "Pushed changes to main branch"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Download Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Videos downloaded: $(ls -1 videos/*.mp4 2>/dev/null | wc -l)" >> $GITHUB_STEP_SUMMARY
+          echo "- M3U updated with GitHub raw URLs" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Note:** GitHub LFS raw URLs serve pointer files. For direct video streaming," >> $GITHUB_STEP_SUMMARY
+          echo "consider using GitHub Releases assets or a CDN instead." >> $GITHUB_STEP_SUMMARY
