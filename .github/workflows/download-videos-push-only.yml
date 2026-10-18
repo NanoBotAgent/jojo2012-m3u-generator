@@ -1,0 +1,34 @@
+name: Download Videos Push Only
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-commit:
+    name: Download Videos & Update M3U
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository with LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Install Git LFS
+        run: |
+          git lfs install
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure Git LFS tracking for video files
+        run: |
+          git lfs track "*.mp4"
+          git add .gitattributes
+
+      - name: Test step
+        run: echo "Push only workflow works"
