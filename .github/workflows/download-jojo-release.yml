@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+env:
+  JOJO_RESOLUTION: ${{ vars.JOJO_RESOLUTION || '720p' }}
+  JOJO_CREATE_RELEASE: ${{ vars.JOJO_CREATE_RELEASE || 'true' }}
+
 jobs:
   download-extract-release:
     name: Download, Extract & Release
@@ -40,7 +44,7 @@ urls = {
     '480p': 'https://pixeldrain.com/api/file/qmkbjjRz',
     '720p': 'https://pixeldrain.com/api/file/b5gcL8LM',
 }
-resolution = '${{ vars.JOJO_RESOLUTION || '720p' }}'
+resolution = '$JOJO_RESOLUTION'
 url = urls[resolution]
 filename = f'Alqanime_Jojo_BD_{resolution}.zip'
 print(f'Downloading {url}')
@@ -77,15 +81,14 @@ print(f'zip_path=/tmp/jojo/{filename}')
           echo "count=$count" >> $GITHUB_OUTPUT
 
       - name: Generate M3U with release URLs
-        id: generate_m3u
-        if: ${{ vars.JOJO_CREATE_RELEASE == 'true' }}
+        if: ${{ env.JOJO_CREATE_RELEASE == 'true' }}
         run: |
           python3 -c "
 import os
 
 repo = '${{ github.repository }}'
 run_number = '${{ github.run_number }}'
-resolution = '${{ vars.JOJO_RESOLUTION || '720p' }}'
+resolution = '$JOJO_RESOLUTION'
 release_tag = f'jojo2012-{resolution}-{run_number}'
 base_url = f'https://github.com/{repo}/releases/download/{release_tag}/'
 
@@ -115,13 +118,13 @@ print(f'm3u_file={m3u_file}')
 " >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        if: ${{ vars.JOJO_CREATE_RELEASE == 'true' }}
+        if: ${{ env.JOJO_CREATE_RELEASE == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
-          name: "JoJo 2012 ${{ vars.JOJO_RESOLUTION || '720p' }} (Episodes 1-26)"
+          name: "JoJo 2012 $JOJO_RESOLUTION (Episodes 1-26)"
           body: |
-            JoJo's Bizarre Adventure 2012 - ${{ vars.JOJO_RESOLUTION || '720p' }}
+            JoJo's Bizarre Adventure 2012 - $JOJO_RESOLUTION
             
             Episodes 1-9: Phantom Blood
             Episodes 10-26: Battle Tendency
@@ -137,7 +140,7 @@ print(f'm3u_file={m3u_file}')
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit M3U to repo
-        if: ${{ vars.JOJO_CREATE_RELEASE == 'true' }}
+        if: ${{ env.JOJO_CREATE_RELEASE == 'true' }}
         run: |
           cd ${{ github.workspace }}
           git config user.name "github-actions[bot]"
@@ -148,7 +151,7 @@ print(f'm3u_file={m3u_file}')
           if git diff --staged --quiet; then
             echo "No M3U changes"
           else
-            git commit -m "Add ${{ vars.JOJO_RESOLUTION || '720p' }} M3U with release URLs"
+            git commit -m "Add $JOJO_RESOLUTION M3U with release URLs"
             git push origin main
             echo "M3U committed and pushed"
           fi
@@ -156,9 +159,9 @@ print(f'm3u_file={m3u_file}')
       - name: Summary
         run: |
           echo "## Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Resolution: ${{ vars.JOJO_RESOLUTION || '720p' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Resolution: $JOJO_RESOLUTION" >> $GITHUB_STEP_SUMMARY
           echo "- Episodes found: ${{ steps.extract.outputs.count }}" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ vars.JOJO_CREATE_RELEASE }}" = "true" ]; then
+          if [ "$JOJO_CREATE_RELEASE" = "true" ]; then
             echo "- Release: ${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
             echo "- M3U: ${{ steps.generate_m3u.outputs.m3u_file }}" >> $GITHUB_STEP_SUMMARY
             echo "- Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY

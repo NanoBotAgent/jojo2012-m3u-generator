@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  VIDEO_URLS_JSON: ${{ vars.VIDEO_URLS || '[]' }}
+
 jobs:
   download-and-commit:
     name: Download Videos & Update M3U
@@ -32,18 +35,11 @@ jobs:
           git add .gitattributes
 
       - name: Parse video URLs
-        id: parse_urls
         run: |
-          if [ -n "${{ vars.VIDEO_URLS }}" ]; then
-            echo "${{ vars.VIDEO_URLS }}" > video_urls.json
-          else
-            echo '[]' > video_urls.json
-            echo "::warning::No video URLs provided. Set VIDEO_URLS repository variable."
-          fi
+          echo '${{ env.VIDEO_URLS_JSON }}' > video_urls.json
           cat video_urls.json
 
       - name: Download videos
-        id: download
         run: |
           python3 -c "
 import os
@@ -81,12 +77,9 @@ for i, url in enumerate(urls):
     except Exception as e:
         print(f'::error::Failed to download episode {ep}: {e}')
         sys.exit(1)
-
-print('videos_dir=videos')
-" >> $GITHUB_OUTPUT
+"
 
       - name: Update M3U with GitHub raw URLs
-        id: update_m3u
         run: |
           python3 -c "
 import os
