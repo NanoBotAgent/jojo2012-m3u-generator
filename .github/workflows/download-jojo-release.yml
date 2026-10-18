@@ -33,14 +33,13 @@ jobs:
           mkdir -p /tmp/jojo
           cd /tmp/jojo
 
-          cat > download.py << 'PYEOF'
+          python3 -c "
 import os, json
 urls = {
     '360p': 'https://pixeldrain.com/api/file/ApBTtMCs',
     '480p': 'https://pixeldrain.com/api/file/qmkbjjRz',
     '720p': 'https://pixeldrain.com/api/file/b5gcL8LM',
 }
-# Get resolution from repository variable or default to 720p
 resolution = '${{ vars.JOJO_RESOLUTION || '720p' }}'
 url = urls[resolution]
 filename = f'Alqanime_Jojo_BD_{resolution}.zip'
@@ -54,8 +53,7 @@ with open(filename, 'wb') as f:
 size = os.path.getsize(filename)
 print(f'Downloaded {filename} ({size} bytes)')
 print(f'zip_path=/tmp/jojo/{filename}')
-PYEOF
-          python3 download.py >> $GITHUB_OUTPUT
+" >> $GITHUB_OUTPUT
 
       - name: Extract episodes
         id: extract
@@ -82,40 +80,39 @@ PYEOF
         id: generate_m3u
         if: ${{ vars.JOJO_CREATE_RELEASE == 'true' }}
         run: |
-          cat > generate_m3u.py << 'PYEOF'
+          python3 -c "
 import os
 
-repo = "${{ github.repository }}"
-run_number = "${{ github.run_number }}"
+repo = '${{ github.repository }}'
+run_number = '${{ github.run_number }}'
 resolution = '${{ vars.JOJO_RESOLUTION || '720p' }}'
-release_tag = f"jojo2012-{resolution}-{run_number}"
-base_url = f"https://github.com/{repo}/releases/download/{release_tag}/"
+release_tag = f'jojo2012-{resolution}-{run_number}'
+base_url = f'https://github.com/{repo}/releases/download/{release_tag}/'
 
-m3u_file = f"jojo2012-{resolution}.m3u"
-asset_dir = "${{ steps.extract.outputs.asset_dir }}"
+m3u_file = f'jojo2012-{resolution}.m3u'
+asset_dir = '${{ steps.extract.outputs.asset_dir }}'
 
 files = sorted(os.listdir(asset_dir))
 
 with open(m3u_file, 'w') as f:
-    f.write("#EXTM3U\n")
+    f.write('#EXTM3U\n')
     for i, filename in enumerate(files):
         ep = i + 1
         if ep <= 9:
-            part = "Phantom Blood"
-            ep_display = f"{ep:02d}"
+            part = 'Phantom Blood'
+            ep_display = f'{ep:02d}'
         else:
-            part = "Battle Tendency"
-            ep_display = f"{ep - 9:02d}"
+            part = 'Battle Tendency'
+            ep_display = f'{ep - 9:02d}'
 
         url = base_url + filename
-        f.write(f'#EXTINF:-1 tvg-id="jojo2012-{ep}" tvg-name="{part} - Episode {ep_display}",{part} - Episode {ep_display}\n')
+        f.write(f'#EXTINF:-1 tvg-id=\"jojo2012-{ep}\" tvg-name=\"{part} - Episode {ep_display}\",{part} - Episode {ep_display}\n')
         f.write(f'{url}\n')
 
-print(f"Generated M3U with {len(files)} entries")
-print(f"release_tag={release_tag}")
-print(f"m3u_file={m3u_file}")
-PYEOF
-          python3 generate_m3u.py >> $GITHUB_OUTPUT
+print(f'Generated M3U with {len(files)} entries')
+print(f'release_tag={release_tag}')
+print(f'm3u_file={m3u_file}')
+" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: ${{ vars.JOJO_CREATE_RELEASE == 'true' }}
