@@ -17,6 +17,8 @@ on:
         required: false
         default: 'true'
         type: string
+  push:
+    branches: [main]
 
 permissions:
   contents: write
