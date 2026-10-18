@@ -55,92 +55,77 @@ jobs:
       - name: Download videos
         id: download
         run: |
-          mkdir -p videos
-          cd videos
-          
-          # Episode mapping: array index 0 = episode 1, etc.
-          # Expected JSON format: ["url1", "url2", ..., "url26"]
-          urls=$(cat ../video_urls.json | jq -r '.[]')
-          
-          episode=1
-          for url in $urls; do
-            if [ -z "$url" ] || [ "$url" = "null" ]; then
-              echo "Skipping empty URL for episode $episode"
-              ((episode++))
-              continue
-            fi
-            
-            # Determine filename pattern
-            if [ $episode -le 9 ]; then
-              part="Phantom Blood"
-              ep_num=$(printf "%02d" $episode)
-            else
-              part="Battle Tendency"
-              ep_num=$(printf "%02d" $((episode - 9)))
-            fi
-            
-            filename="Alqanime_Jojo_BD_${episode}_720p.mp4"
-            if [ $episode -eq 26 ]; then
-              filename="Alqanime_Jojo_BD_26_END_720p.mp4"
-            fi
-            
-            echo "Downloading episode $episode ($part Ep $ep_num) from $url"
-            echo "Saving as $filename"
-            
-            # Download with resume support and progress
-            curl -L -C - -o "$filename" "$url" --max-time 3600 --retry 3 --retry-delay 10
-            
-            if [ $? -eq 0 ] && [ -f "$filename" ] && [ -s "$filename" ]; then
-              size=$(stat -c%s "$filename")
-              echo "Downloaded $filename ($size bytes)"
-            else
-              echo "::error::Failed to download episode $episode"
-              exit 1
-            fi
-            
-            ((episode++))
-          done
-          
-          echo "videos_dir=videos" >> $GITHUB_OUTPUT
+          python3 << 'PYEOF'
+import os
+import json
+import requests
+import sys
+
+with open('video_urls.json') as f:
+    urls = json.load(f)
+
+os.makedirs('videos', exist_ok=True)
+os.chdir('videos')
+
+for i, url in enumerate(urls):
+    ep = i + 1
+    if not url or url == "null":
+        print(f"Skipping empty URL for episode {ep}")
+        continue
+
+    filename = f"Alqanime_Jojo_BD_{ep}_720p.mp4"
+    if ep == 26:
+        filename = "Alqanime_Jojo_BD_26_END_720p.mp4"
+
+    print(f"Downloading episode {ep} from {url}")
+    print(f"Saving as {filename}")
+
+    try:
+        r = requests.get(url, stream=True, timeout=3600)
+        r.raise_for_status()
+        with open(filename, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+        size = os.path.getsize(filename)
+        print(f"Downloaded {filename} ({size} bytes)")
+    except Exception as e:
+        print(f"::error::Failed to download episode {ep}: {e}")
+        sys.exit(1)
+
+print("videos_dir=videos")
+PYEOF
 
       - name: Update M3U with GitHub raw URLs
         id: update_m3u
         run: |
-          cd ${{ steps.download.outputs.videos_dir }}
-          
-          # Generate new M3U content
-          cat > ../jojo2012-720p.m3u.new << 'EOF'
-#EXTM3U
-EOF
-          
-          for ep in {1..26}; do
-            if [ $ep -le 9 ]; then
-              part="Phantom Blood"
-              ep_display=$(printf "%02d" $ep)
-            else
-              part="Battle Tendency"
-              ep_display=$(printf "%02d" $((ep - 9)))
-            fi
-            
-            if [ $ep -eq 26 ]; then
-              filename="Alqanime_Jojo_BD_26_END_720p.mp4"
-            else
-              filename="Alqanime_Jojo_BD_${ep}_720p.mp4"
-            fi
-            
-            # GitHub raw URL for LFS files (uses media.githubusercontent.com for direct access)
-            # Note: For LFS files, raw URLs serve the LFS pointer, not the actual file.
-            # For direct video streaming, consider using GitHub Releases instead.
-            raw_url="https://media.githubusercontent.com/media/${{ github.repository }}/main/videos/${filename}"
-            
-            cat >> ../jojo2012-720p.m3u.new << EOE
-#EXTINF:-1 tvg-id="jojo2012-${ep}" tvg-name="${part} - Episode ${ep_display}",${part} - Episode ${ep_display}
-${raw_url}
-EOE
-          done
-          
-          mv ../jojo2012-720p.m3u.new ../jojo2012-720p.m3u
-          echo "Updated M3U with $(grep -c '^https://' ../jojo2012-720p.m3u) video entries"
+          python3 << 'PYEOF'
+import os
+
+repo = "${{ github.repository }}"
+m3u_file = "jojo2012-720p.m3u"
+
+with open(m3u_file, 'w') as f:
+    f.write("#EXTM3U\n")
+    for ep in range(1, 27):
+        if ep <= 9:
+            part = "Phantom Blood"
+            ep_display = f"{ep:02d}"
+        else:
+            part = "Battle Tendency"
+            ep_display = f"{ep - 9:02d}"
+
+        filename = f"Alqanime_Jojo_BD_{ep}_720p.mp4"
+        if ep == 26:
+            filename = "Alqanime_Jojo_BD_26_END_720p.mp4"
+
+        raw_url = f"https://media.githubusercontent.com/media/{repo}/main/videos/{filename}"
+
+        f.write(f'#EXTINF:-1 tvg-id="jojo2012-{ep}" tvg-name="{part} - Episode {ep_display}",{part} - Episode {ep_display}\n')
+        f.write(f'{raw_url}\n')
+
+count = sum(1 for _ in open(m3u_file) if _.startswith('https://'))
+print(f"Updated M3U with {count} video entries")
+PYEOF
 
       - name: Commit changes
         run: |

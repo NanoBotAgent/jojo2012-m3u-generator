@@ -16,7 +16,7 @@ on:
         description: 'Create GitHub Release with episodes as assets'
         required: false
         default: 'true'
-        type: string
+        type: boolean
 
 permissions:
   contents: write
@@ -46,26 +46,28 @@ jobs:
           mkdir -p /tmp/jojo
           cd /tmp/jojo
 
-          declare -A urls=(
-            ["360p"]="https://pixeldrain.com/api/file/ApBTtMCs"
-            ["480p"]="https://pixeldrain.com/api/file/qmkbjjRz"
-            ["720p"]="https://pixeldrain.com/api/file/b5gcL8LM"
-          )
-
-          url="${urls[${{ github.event.inputs.resolution }}]}"
-          filename="Alqanime_Jojo_BD_${{ github.event.inputs.resolution }}.zip"
-
-          echo "Downloading $url"
-          curl -L -o "$filename" "$url" --max-time 7200 --retry 3 --retry-delay 30
-
-          if [ ! -f "$filename" ] || [ ! -s "$filename" ]; then
-            echo "::error::Download failed"
-            exit 1
-          fi
-
-          size=$(stat -c%s "$filename")
-          echo "Downloaded $filename ($size bytes)"
-          echo "zip_path=/tmp/jojo/$filename" >> $GITHUB_OUTPUT
+          # Map resolution to PixelDrain API URL
+          python3 -c "
+import os, json
+urls = {
+    '360p': 'https://pixeldrain.com/api/file/ApBTtMCs',
+    '480p': 'https://pixeldrain.com/api/file/qmkbjjRz',
+    '720p': 'https://pixeldrain.com/api/file/b5gcL8LM',
+}
+resolution = '${{ github.event.inputs.resolution }}'
+url = urls[resolution]
+filename = f'Alqanime_Jojo_BD_{resolution}.zip'
+print(f'Downloading {url}')
+import requests
+r = requests.get(url, stream=True, timeout=7200)
+r.raise_for_status()
+with open(filename, 'wb') as f:
+    for chunk in r.iter_content(chunk_size=8192):
+        f.write(chunk)
+size = os.path.getsize(filename)
+print(f'Downloaded {filename} ({size} bytes)')
+print(f'zip_path=/tmp/jojo/{filename}')
+" >> $GITHUB_OUTPUT
 
       - name: Extract episodes
         id: extract
@@ -90,42 +92,45 @@ jobs:
 
       - name: Generate M3U with release URLs
         id: generate_m3u
-        if: ${{ github.event.inputs.create_release == 'true' }}
+        if: ${{ github.event.inputs.create_release }}
         run: |
-          cd ${{ github.workspace }}
-          RELEASE_TAG="jojo2012-${{ github.event.inputs.resolution }}-${{ github.run_number }}"
-          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/"
+          python3 << 'PYEOF'
+import os
+import subprocess
 
-          m3u_file="jojo2012-${{ github.event.inputs.resolution }}.m3u"
+repo = "${{ github.repository }}"
+run_number = "${{ github.run_number }}"
+resolution = "${{ github.event.inputs.resolution }}"
+release_tag = f"jojo2012-{resolution}-{run_number}"
+base_url = f"https://github.com/{repo}/releases/download/{release_tag}/"
 
-          echo "#EXTM3U" > "$m3u_file"
+m3u_file = f"jojo2012-{resolution}.m3u"
+asset_dir = "${{ steps.extract.outputs.asset_dir }}"
 
-          ep=1
-          for file in $(ls -1 release_assets/ | sort); do
-            if [ $ep -le 9 ]; then
-              part="Phantom Blood"
-              ep_display=$(printf "%02d" $ep)
-            else
-              part="Battle Tendency"
-              ep_display=$(printf "%02d" $((ep - 9)))
-            fi
+files = sorted(os.listdir(asset_dir))
 
-            url="${BASE_URL}${file}"
+with open(m3u_file, 'w') as f:
+    f.write("#EXTM3U\n")
+    for i, filename in enumerate(files):
+        ep = i + 1
+        if ep <= 9:
+            part = "Phantom Blood"
+            ep_display = f"{ep:02d}"
+        else:
+            part = "Battle Tendency"
+            ep_display = f"{ep - 9:02d}"
 
-            cat >> "$m3u_file" << EOE
-#EXTINF:-1 tvg-id="jojo2012-${ep}" tvg-name="${part} - Episode ${ep_display}",${part} - Episode ${ep_display}
-${url}
-EOE
+        url = base_url + filename
+        f.write(f'#EXTINF:-1 tvg-id="jojo2012-{ep}" tvg-name="{part} - Episode {ep_display}",{part} - Episode {ep_display}\n')
+        f.write(f'{url}\n')
 
-            ((ep++))
-          done
-
-          echo "Generated M3U with $((ep-1)) entries"
-          echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
-          echo "m3u_file=${m3u_file}" >> $GITHUB_OUTPUT
+print(f"Generated M3U with {len(files)} entries")
+print(f"release_tag={release_tag}")
+print(f"m3u_file={m3u_file}")
+PYEOF
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.create_release == 'true' }}
+        if: ${{ github.event.inputs.create_release }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
@@ -147,7 +152,7 @@ EOE
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit M3U to repo
-        if: ${{ github.event.inputs.create_release == 'true' }}
+        if: ${{ github.event.inputs.create_release }}
         run: |
           cd ${{ github.workspace }}
           git config user.name "github-actions[bot]"
