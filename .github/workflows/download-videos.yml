@@ -2,16 +2,6 @@ name: Download and Commit JoJo 2012 Videos
 
 on:
   workflow_dispatch:
-    inputs:
-      video_urls:
-        description: 'JSON array of video URLs for episodes 1-26 (or provide via repository variable VIDEO_URLS)'
-        required: false
-        type: string
-      commit_message:
-        description: 'Commit message'
-        required: false
-        default: 'Add JoJo 2012 720p videos and update M3U'
-        type: string
   push:
     branches: [main]
 
@@ -44,13 +34,11 @@ jobs:
       - name: Parse video URLs
         id: parse_urls
         run: |
-          if [ -n "${{ github.event.inputs.video_urls }}" ]; then
-            echo "${{ github.event.inputs.video_urls }}" > video_urls.json
-          elif [ -n "${{ vars.VIDEO_URLS }}" ]; then
+          if [ -n "${{ vars.VIDEO_URLS }}" ]; then
             echo "${{ vars.VIDEO_URLS }}" > video_urls.json
           else
             echo '[]' > video_urls.json
-            echo "::warning::No video URLs provided. Set VIDEO_URLS repository variable or provide via workflow_dispatch input."
+            echo "::warning::No video URLs provided. Set VIDEO_URLS repository variable."
           fi
           cat video_urls.json
 
@@ -138,7 +126,7 @@ PYEOF
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "${{ github.event.inputs.commit_message }}"
+            git commit -m "Add JoJo 2012 720p videos and update M3U"
             git push origin main
             echo "Pushed changes to main branch"
           fi

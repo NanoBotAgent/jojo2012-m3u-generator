@@ -1,22 +1,7 @@
-name: Download JoJo 2012 720p Release
+name: Download JoJo 2012 Release
 
 on:
   workflow_dispatch:
-    inputs:
-      resolution:
-        description: 'Resolution to download'
-        required: true
-        default: '720p'
-        type: choice
-        options:
-          - 360p
-          - 480p
-          - 720p
-      create_release:
-        description: 'Create GitHub Release with episodes as assets'
-        required: false
-        default: 'true'
-        type: string
   push:
     branches: [main]
 
@@ -55,7 +40,8 @@ urls = {
     '480p': 'https://pixeldrain.com/api/file/qmkbjjRz',
     '720p': 'https://pixeldrain.com/api/file/b5gcL8LM',
 }
-resolution = '${{ github.event.inputs.resolution }}'
+# Get resolution from repository variable or default to 720p
+resolution = '${{ vars.JOJO_RESOLUTION || '720p' }}'
 url = urls[resolution]
 filename = f'Alqanime_Jojo_BD_{resolution}.zip'
 print(f'Downloading {url}')
@@ -94,14 +80,14 @@ PYEOF
 
       - name: Generate M3U with release URLs
         id: generate_m3u
-        if: ${{ github.event.inputs.create_release == 'true' }}
+        if: ${{ vars.JOJO_CREATE_RELEASE == 'true' }}
         run: |
           cat > generate_m3u.py << 'PYEOF'
 import os
 
 repo = "${{ github.repository }}"
 run_number = "${{ github.run_number }}"
-resolution = "${{ github.event.inputs.resolution }}"
+resolution = '${{ vars.JOJO_RESOLUTION || '720p' }}'
 release_tag = f"jojo2012-{resolution}-{run_number}"
 base_url = f"https://github.com/{repo}/releases/download/{release_tag}/"
 
@@ -132,13 +118,13 @@ PYEOF
           python3 generate_m3u.py >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.create_release == 'true' }}
+        if: ${{ vars.JOJO_CREATE_RELEASE == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
-          name: "JoJo 2012 ${{ github.event.inputs.resolution }} (Episodes 1-26)"
+          name: "JoJo 2012 ${{ vars.JOJO_RESOLUTION || '720p' }} (Episodes 1-26)"
           body: |
-            JoJo's Bizarre Adventure 2012 - ${{ github.event.inputs.resolution }}
+            JoJo's Bizarre Adventure 2012 - ${{ vars.JOJO_RESOLUTION || '720p' }}
             
             Episodes 1-9: Phantom Blood
             Episodes 10-26: Battle Tendency
@@ -154,7 +140,7 @@ PYEOF
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit M3U to repo
-        if: ${{ github.event.inputs.create_release == 'true' }}
+        if: ${{ vars.JOJO_CREATE_RELEASE == 'true' }}
         run: |
           cd ${{ github.workspace }}
           git config user.name "github-actions[bot]"
@@ -165,7 +151,7 @@ PYEOF
           if git diff --staged --quiet; then
             echo "No M3U changes"
           else
-            git commit -m "Add ${{ github.event.inputs.resolution }} M3U with release URLs"
+            git commit -m "Add ${{ vars.JOJO_RESOLUTION || '720p' }} M3U with release URLs"
             git push origin main
             echo "M3U committed and pushed"
           fi
@@ -173,9 +159,9 @@ PYEOF
       - name: Summary
         run: |
           echo "## Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Resolution: ${{ github.event.inputs.resolution }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Resolution: ${{ vars.JOJO_RESOLUTION || '720p' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Episodes found: ${{ steps.extract.outputs.count }}" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ github.event.inputs.create_release }}" = "true" ]; then
+          if [ "${{ vars.JOJO_CREATE_RELEASE }}" = "true" ]; then
             echo "- Release: ${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
             echo "- M3U: ${{ steps.generate_m3u.outputs.m3u_file }}" >> $GITHUB_STEP_SUMMARY
             echo "- Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
