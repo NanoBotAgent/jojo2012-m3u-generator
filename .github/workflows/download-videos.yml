@@ -54,6 +54,7 @@ jobs:
           
           if git diff --staged --quiet; then
             echo "No changes to commit"
+            exit 0
           else
             git commit -m "Add JoJo 2012 720p videos and update M3U"
             git push origin main
