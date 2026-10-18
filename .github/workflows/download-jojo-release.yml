@@ -1,0 +1,180 @@
+name: Download JoJo 2012 720p Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      resolution:
+        description: 'Resolution to download'
+        required: true
+        default: '720p'
+        type: choice
+        options:
+          - 360p
+          - 480p
+          - 720p
+      create_release:
+        description: 'Create GitHub Release with episodes as assets'
+        required: false
+        default: 'true'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download-extract-release:
+    name: Download, Extract & Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests tqdm
+
+      - name: Download batch ZIP
+        id: download
+        run: |
+          mkdir -p /tmp/jojo
+          cd /tmp/jojo
+
+          # Map resolution to PixelDrain API URL
+          python3 -c "
+import os, json
+urls = {
+    '360p': 'https://pixeldrain.com/api/file/ApBTtMCs',
+    '480p': 'https://pixeldrain.com/api/file/qmkbjjRz',
+    '720p': 'https://pixeldrain.com/api/file/b5gcL8LM',
+}
+resolution = '${{ github.event.inputs.resolution }}'
+url = urls[resolution]
+filename = f'Alqanime_Jojo_BD_{resolution}.zip'
+print(f'Downloading {url}')
+import requests
+r = requests.get(url, stream=True, timeout=7200)
+r.raise_for_status()
+with open(filename, 'wb') as f:
+    for chunk in r.iter_content(chunk_size=8192):
+        f.write(chunk)
+size = os.path.getsize(filename)
+print(f'Downloaded {filename} ({size} bytes)')
+print(f'zip_path=/tmp/jojo/{filename}')
+" >> $GITHUB_OUTPUT
+
+      - name: Extract episodes
+        id: extract
+        run: |
+          cd /tmp/jojo
+          unzip -o "${{ steps.download.outputs.zip_path }}" -d episodes
+
+          find episodes -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" \) | sort | head -26 > video_files.txt
+
+          count=$(wc -l < video_files.txt)
+          echo "Found $count video files"
+
+          if [ "$count" -lt 26 ]; then
+            echo "::warning::Expected 26 episodes, found $count"
+          fi
+
+          mkdir -p ${{ github.workspace }}/release_assets
+          cp $(cat video_files.txt) ${{ github.workspace }}/release_assets/
+
+          echo "asset_dir=${{ github.workspace }}/release_assets" >> $GITHUB_OUTPUT
+          echo "count=$count" >> $GITHUB_OUTPUT
+
+      - name: Generate M3U with release URLs
+        id: generate_m3u
+        if: ${{ github.event.inputs.create_release == 'true' }}
+        run: |
+          python3 << 'PYEOF'
+import os
+import subprocess
+
+repo = "${{ github.repository }}"
+run_number = "${{ github.run_number }}"
+resolution = "${{ github.event.inputs.resolution }}"
+release_tag = f"jojo2012-{resolution}-{run_number}"
+base_url = f"https://github.com/{repo}/releases/download/{release_tag}/"
+
+m3u_file = f"jojo2012-{resolution}.m3u"
+asset_dir = "${{ steps.extract.outputs.asset_dir }}"
+
+files = sorted(os.listdir(asset_dir))
+
+with open(m3u_file, 'w') as f:
+    f.write("#EXTM3U\n")
+    for i, filename in enumerate(files):
+        ep = i + 1
+        if ep <= 9:
+            part = "Phantom Blood"
+            ep_display = f"{ep:02d}"
+        else:
+            part = "Battle Tendency"
+            ep_display = f"{ep - 9:02d}"
+
+        url = base_url + filename
+        f.write(f'#EXTINF:-1 tvg-id="jojo2012-{ep}" tvg-name="{part} - Episode {ep_display}",{part} - Episode {ep_display}\n')
+        f.write(f'{url}\n')
+
+print(f"Generated M3U with {len(files)} entries")
+print(f"release_tag={release_tag}")
+print(f"m3u_file={m3u_file}")
+PYEOF
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.create_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
+          name: "JoJo 2012 ${{ github.event.inputs.resolution }} (Episodes 1-26)"
+          body: |
+            JoJo's Bizarre Adventure 2012 - ${{ github.event.inputs.resolution }}
+            
+            Episodes 1-9: Phantom Blood
+            Episodes 10-26: Battle Tendency
+            
+            Source: Alqanime (BD, Indonesian hard-subs)
+            Downloaded from PixelDrain batch ZIP
+            
+            Generated on ${{ github.run_id }}
+          files: ${{ steps.extract.outputs.asset_dir }}/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit M3U to repo
+        if: ${{ github.event.inputs.create_release == 'true' }}
+        run: |
+          cd ${{ github.workspace }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add "${{ steps.generate_m3u.outputs.m3u_file }}"
+          
+          if git diff --staged --quiet; then
+            echo "No M3U changes"
+          else
+            git commit -m "Add ${{ github.event.inputs.resolution }} M3U with release URLs"
+            git push origin main
+            echo "M3U committed and pushed"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Resolution: ${{ github.event.inputs.resolution }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Episodes found: ${{ steps.extract.outputs.count }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.create_release }}" = "true" ]; then
+            echo "- Release: ${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+            echo "- M3U: ${{ steps.generate_m3u.outputs.m3u_file }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
