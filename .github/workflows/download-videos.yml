@@ -1,7 +1,6 @@
 name: Download and Commit JoJo 2012 Videos
 
 on:
-  workflow_dispatch:
   push:
     branches: [main]
 
