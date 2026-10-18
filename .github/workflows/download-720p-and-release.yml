@@ -1,0 +1,181 @@
+name: Download JoJo 2012 720p & Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      resolution:
+        description: 'Resolution to download'
+        required: true
+        default: '720p'
+        type: choice
+        options:
+          - 360p
+          - 480p
+          - 720p
+      create_release:
+        description: 'Create GitHub Release with episodes as assets'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  download-extract-release:
+    name: Download, Extract & Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install requests tqdm
+
+      - name: Download batch ZIP
+        id: download
+        run: |
+          mkdir -p /tmp/jojo
+          cd /tmp/jojo
+
+          # PixelDrain batch ZIP URLs
+          declare -A urls=(
+            ["360p"]="https://pixeldrain.com/api/file/ApBTtMCs"
+            ["480p"]="https://pixeldrain.com/api/file/qmkbjjRz"
+            ["720p"]="https://pixeldrain.com/api/file/b5gcL8LM"
+          )
+
+          url="${urls[${{ github.event.inputs.resolution }}]}"
+          filename="Alqanime_Jojo_BD_${{ github.event.inputs.resolution }}.zip"
+
+          echo "Downloading $url"
+          curl -L -o "$filename" "$url" --max-time 7200 --retry 3 --retry-delay 30
+
+          if [ ! -f "$filename" ] || [ ! -s "$filename" ]; then
+            echo "::error::Download failed"
+            exit 1
+          fi
+
+          size=$(stat -c%s "$filename")
+          echo "Downloaded $filename ($size bytes)"
+          echo "zip_path=/tmp/jojo/$filename" >> $GITHUB_OUTPUT
+
+      - name: Extract episodes
+        id: extract
+        run: |
+          cd /tmp/jojo
+          unzip -o "${{ steps.download.outputs.zip_path }}" -d episodes
+
+          # Find all video files
+          find episodes -type f \( -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.avi" \) | sort | head -26 > video_files.txt
+
+          count=$(wc -l < video_files.txt)
+          echo "Found $count video files"
+
+          if [ "$count" -lt 26 ]; then
+            echo "::warning::Expected 26 episodes, found $count"
+          fi
+
+          # Copy to workspace for release upload
+          mkdir -p ${{ github.workspace }}/release_assets
+          cp $(cat video_files.txt) ${{ github.workspace }}/release_assets/
+
+          echo "asset_dir=${{ github.workspace }}/release_assets" >> $GITHUB_OUTPUT
+          echo "count=$count" >> $GITHUB_OUTPUT
+
+      - name: Generate M3U with release URLs
+        id: generate_m3u
+        if: ${{ github.event.inputs.create_release }}
+        run: |
+          cd ${{ github.workspace }}
+          RELEASE_TAG="jojo2012-${{ github.event.inputs.resolution }}-${{ github.run_number }}"
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/"
+
+          cat > jojo2012-${{ github.event.inputs.resolution }}.m3u << 'EOF'
+#EXTM3U
+EOF
+
+          # Episode mapping
+          ep=1
+          for file in $(ls -1 release_assets/ | sort); do
+            if [ $ep -le 9 ]; then
+              part="Phantom Blood"
+              ep_display=$(printf "%02d" $ep)
+            else
+              part="Battle Tendency"
+              ep_display=$(printf "%02d" $((ep - 9)))
+            fi
+
+            url="${BASE_URL}${file}"
+
+            cat >> jojo2012-${{ github.event.inputs.resolution }}.m3u << EOE
+#EXTINF:-1 tvg-id="jojo2012-${ep}" tvg-name="${part} - Episode ${ep_display}",${part} - Episode ${ep_display}
+${url}
+EOE
+
+            ((ep++))
+          done
+
+          echo "Generated M3U with $((ep-1)) entries"
+          echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+          echo "m3u_file=jojo2012-${{ github.event.inputs.resolution }}.m3u" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.create_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
+          name: "JoJo 2012 ${{ github.event.inputs.resolution }} (Episodes 1-26)"
+          body: |
+            JoJo's Bizarre Adventure 2012 - ${{ github.event.inputs.resolution }}
+            
+            Episodes 1-9: Phantom Blood
+            Episodes 10-26: Battle Tendency
+            
+            Source: Alqanime (BD, Indonesian hard-subs)
+            Downloaded from PixelDrain batch ZIP
+            
+            Generated on ${{ github.run_id }}
+          files: |
+            ${{ steps.extract.outputs.asset_dir }}/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit M3U to repo
+        if: ${{ github.event.inputs.create_release }}
+        run: |
+          cd ${{ github.workspace }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add "${{ steps.generate_m3u.outputs.m3u_file }}"
+          
+          if git diff --staged --quiet; then
+            echo "No M3U changes"
+          else
+            git commit -m "Add ${{ github.event.inputs.resolution }} M3U with release URLs"
+            git push origin main
+            echo "M3U committed and pushed"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Resolution: ${{ github.event.inputs.resolution }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Episodes found: ${{ steps.extract.outputs.count }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event.inputs.create_release }}" = "true" ]; then
+            echo "- Release: ${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+            echo "- M3U: ${{ steps.generate_m3u.outputs.m3u_file }}" >> $GITHUB_STEP_SUMMARY
+            echo "- Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
+          fi
