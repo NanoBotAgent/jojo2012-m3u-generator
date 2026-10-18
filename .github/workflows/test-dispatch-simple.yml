@@ -8,6 +8,8 @@ on:
         required: true
         default: 'Hello World'
         type: string
+  push:
+    branches: [main]
 
 jobs:
   test:
