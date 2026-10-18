@@ -12,6 +12,8 @@ on:
         required: false
         default: 'Add JoJo 2012 720p videos and update M3U'
         type: string
+  push:
+    branches: [main]
 
 permissions:
   contents: write

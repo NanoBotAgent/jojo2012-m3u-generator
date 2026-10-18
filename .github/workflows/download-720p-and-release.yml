@@ -16,7 +16,9 @@ on:
         description: 'Create GitHub Release with episodes as assets'
         required: false
         default: 'true'
-        type: boolean
+        type: string
+  push:
+    branches: [main]
 
 permissions:
   contents: write
@@ -92,7 +94,7 @@ print(f'zip_path=/tmp/jojo/{filename}')
 
       - name: Generate M3U with release URLs
         id: generate_m3u
-        if: ${{ github.event.inputs.create_release }}
+        if: ${{ github.event.inputs.create_release == 'true' }}
         run: |
           python3 << 'PYEOF'
 import os
@@ -130,7 +132,7 @@ print(f"m3u_file={m3u_file}")
 PYEOF
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.create_release }}
+        if: ${{ github.event.inputs.create_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
@@ -152,7 +154,7 @@ PYEOF
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit M3U to repo
-        if: ${{ github.event.inputs.create_release }}
+        if: ${{ github.event.inputs.create_release == 'true' }}
         run: |
           cd ${{ github.workspace }}
           git config user.name "github-actions[bot]"
