@@ -33,7 +33,6 @@ jobs:
 
       - name: Parse video URLs
         run: |
-          # Use repository variable or empty array
           video_urls="${{ vars.VIDEO_URLS }}"
           if [ -n "$video_urls" ]; then
             echo "$video_urls" > video_urls.json
@@ -43,9 +42,9 @@ jobs:
           fi
           cat video_urls.json
 
-      - name: Download videos
+      - name: Write download script
         run: |
-          python3 -c "
+          cat > download_videos.py << 'ENDOFSCRIPT'
 import os
 import json
 import requests
@@ -81,14 +80,19 @@ for i, url in enumerate(urls):
     except Exception as e:
         print(f'::error::Failed to download episode {ep}: {e}')
         sys.exit(1)
-"
 
-      - name: Update M3U with GitHub raw URLs
+print('Download complete')
+ENDOFSCRIPT
+
+      - name: Download videos
+        run: python3 download_videos.py
+
+      - name: Write M3U generation script
         run: |
-          python3 -c "
+          cat > generate_m3u.py << 'ENDOFSCRIPT'
 import os
 
-repo = '${{ github.repository }}'
+repo = os.environ.get('GITHUB_REPOSITORY', '')
 m3u_file = 'jojo2012-720p.m3u'
 
 with open(m3u_file, 'w') as f:
@@ -107,12 +111,16 @@ with open(m3u_file, 'w') as f:
 
         raw_url = f'https://media.githubusercontent.com/media/{repo}/main/videos/{filename}'
 
-        f.write(f'#EXTINF:-1 tvg-id=\"jojo2012-{ep}\" tvg-name=\"{part} - Episode {ep_display}\",{part} - Episode {ep_display}\n')
+        f.write(f'#EXTINF:-1 tvg-id="jojo2012-{ep}" tvg-name="{part} - Episode {ep_display}",{part} - Episode {ep_display}\n')
         f.write(f'{raw_url}\n')
 
 count = sum(1 for _ in open(m3u_file) if _.startswith('https://'))
 print(f'Updated M3U with {count} video entries')
-"
+ENDOFSCRIPT
+
+      - name: Generate M3U
+        run: |
+          GITHUB_REPOSITORY="${{ github.repository }}" python3 generate_m3u.py
 
       - name: Commit changes
         run: |

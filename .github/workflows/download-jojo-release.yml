@@ -33,22 +33,25 @@ jobs:
           mkdir -p /tmp/jojo
           cd /tmp/jojo
 
-          # Get resolution from repository variable or default to 720p
           resolution="${{ vars.JOJO_RESOLUTION }}"
           if [ -z "$resolution" ]; then
             resolution="720p"
           fi
 
-          python3 -c "
-import os, json
+          cat > download.py << 'ENDOFSCRIPT'
+import os
+import json
+
 urls = {
     '360p': 'https://pixeldrain.com/api/file/ApBTtMCs',
     '480p': 'https://pixeldrain.com/api/file/qmkbjjRz',
     '720p': 'https://pixeldrain.com/api/file/b5gcL8LM',
 }
-resolution = '$resolution'
+
+resolution = os.environ.get('JOJO_RESOLUTION', '720p')
 url = urls[resolution]
 filename = f'Alqanime_Jojo_BD_{resolution}.zip'
+
 print(f'Downloading {url}')
 import requests
 r = requests.get(url, stream=True, timeout=7200)
@@ -59,7 +62,9 @@ with open(filename, 'wb') as f:
 size = os.path.getsize(filename)
 print(f'Downloaded {filename} ({size} bytes)')
 print(f'zip_path=/tmp/jojo/{filename}')
-" >> $GITHUB_OUTPUT
+ENDOFSCRIPT
+
+          JOJO_RESOLUTION="$resolution" python3 download.py >> $GITHUB_OUTPUT
 
       - name: Extract episodes
         id: extract
@@ -85,7 +90,11 @@ print(f'zip_path=/tmp/jojo/{filename}')
       - name: Generate M3U with release URLs
         id: generate_m3u
         run: |
-          # Check if release should be created
+          resolution="${{ vars.JOJO_RESOLUTION }}"
+          if [ -z "$resolution" ]; then
+            resolution="720p"
+          fi
+          
           create_release="${{ vars.JOJO_CREATE_RELEASE }}"
           if [ -z "$create_release" ]; then
             create_release="true"
@@ -98,17 +107,17 @@ print(f'zip_path=/tmp/jojo/{filename}')
 
           echo "create_release=true" >> $GITHUB_OUTPUT
 
-          python3 -c "
+          cat > generate_m3u.py << 'ENDOFSCRIPT'
 import os
 
-repo = '${{ github.repository }}'
-run_number = '${{ github.run_number }}'
-resolution = '$resolution'
+repo = os.environ.get('GITHUB_REPOSITORY', '')
+run_number = os.environ.get('GITHUB_RUN_NUMBER', '1')
+resolution = os.environ.get('JOJO_RESOLUTION', '720p')
 release_tag = f'jojo2012-{resolution}-{run_number}'
 base_url = f'https://github.com/{repo}/releases/download/{release_tag}/'
 
 m3u_file = f'jojo2012-{resolution}.m3u'
-asset_dir = '${{ steps.extract.outputs.asset_dir }}'
+asset_dir = os.environ.get('ASSET_DIR', 'release_assets')
 
 files = sorted(os.listdir(asset_dir))
 
@@ -124,22 +133,24 @@ with open(m3u_file, 'w') as f:
             ep_display = f'{ep - 9:02d}'
 
         url = base_url + filename
-        f.write(f'#EXTINF:-1 tvg-id=\"jojo2012-{ep}\" tvg-name=\"{part} - Episode {ep_display}\",{part} - Episode {ep_display}\n')
+        f.write(f'#EXTINF:-1 tvg-id="jojo2012-{ep}" tvg-name="{part} - Episode {ep_display}",{part} - Episode {ep_display}\n')
         f.write(f'{url}\n')
 
 print(f'Generated M3U with {len(files)} entries')
 print(f'release_tag={release_tag}')
 print(f'm3u_file={m3u_file}')
-" >> $GITHUB_OUTPUT
+ENDOFSCRIPT
+
+          JOJO_RESOLUTION="$resolution" ASSET_DIR="${{ github.workspace }}/release_assets" python3 generate_m3u.py >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: ${{ steps.generate_m3u.outputs.create_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
-          name: "JoJo 2012 $resolution (Episodes 1-26)"
+          name: "JoJo 2012 ${{ vars.JOJO_RESOLUTION || '720p' }} (Episodes 1-26)"
           body: |
-            JoJo's Bizarre Adventure 2012 - $resolution
+            JoJo's Bizarre Adventure 2012 - ${{ vars.JOJO_RESOLUTION || '720p' }}
             
             Episodes 1-9: Phantom Blood
             Episodes 10-26: Battle Tendency
@@ -166,7 +177,7 @@ print(f'm3u_file={m3u_file}')
           if git diff --staged --quiet; then
             echo "No M3U changes"
           else
-            git commit -m "Add $resolution M3U with release URLs"
+            git commit -m "Add ${{ vars.JOJO_RESOLUTION || '720p' }} M3U with release URLs"
             git push origin main
             echo "M3U committed and pushed"
           fi
@@ -174,7 +185,7 @@ print(f'm3u_file={m3u_file}')
       - name: Summary
         run: |
           echo "## Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Resolution: $resolution" >> $GITHUB_STEP_SUMMARY
+          echo "- Resolution: ${{ vars.JOJO_RESOLUTION || '720p' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Episodes found: ${{ steps.extract.outputs.count }}" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.generate_m3u.outputs.create_release }}" = "true" ]; then
             echo "- Release: ${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
