@@ -16,7 +16,7 @@ on:
         description: 'Create GitHub Release with episodes as assets'
         required: false
         default: 'true'
-        type: boolean
+        type: string
 
 permissions:
   contents: write
@@ -94,7 +94,7 @@ jobs:
 
       - name: Generate M3U with release URLs
         id: generate_m3u
-        if: ${{ github.event.inputs.create_release }}
+        if: ${{ github.event.inputs.create_release == 'true' }}
         run: |
           cd ${{ github.workspace }}
           RELEASE_TAG="jojo2012-${{ github.event.inputs.resolution }}-${{ github.run_number }}"
@@ -130,7 +130,7 @@ EOE
           echo "m3u_file=jojo2012-${{ github.event.inputs.resolution }}.m3u" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        if: ${{ github.event.inputs.create_release }}
+        if: ${{ github.event.inputs.create_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
@@ -153,7 +153,7 @@ EOE
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit M3U to repo
-        if: ${{ github.event.inputs.create_release }}
+        if: ${{ github.event.inputs.create_release == 'true' }}
         run: |
           cd ${{ github.workspace }}
           git config user.name "github-actions[bot]"
