@@ -48,8 +48,7 @@ jobs:
           mkdir -p /tmp/jojo
           cd /tmp/jojo
 
-          # Map resolution to PixelDrain API URL
-          python3 -c "
+          cat > download.py << 'PYEOF'
 import os, json
 urls = {
     '360p': 'https://pixeldrain.com/api/file/ApBTtMCs',
@@ -69,7 +68,8 @@ with open(filename, 'wb') as f:
 size = os.path.getsize(filename)
 print(f'Downloaded {filename} ({size} bytes)')
 print(f'zip_path=/tmp/jojo/{filename}')
-" >> $GITHUB_OUTPUT
+PYEOF
+          python3 download.py >> $GITHUB_OUTPUT
 
       - name: Extract episodes
         id: extract
@@ -96,9 +96,8 @@ print(f'zip_path=/tmp/jojo/{filename}')
         id: generate_m3u
         if: ${{ github.event.inputs.create_release == 'true' }}
         run: |
-          python3 << 'PYEOF'
+          cat > generate_m3u.py << 'PYEOF'
 import os
-import subprocess
 
 repo = "${{ github.repository }}"
 run_number = "${{ github.run_number }}"
@@ -130,6 +129,7 @@ print(f"Generated M3U with {len(files)} entries")
 print(f"release_tag={release_tag}")
 print(f"m3u_file={m3u_file}")
 PYEOF
+          python3 generate_m3u.py >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: ${{ github.event.inputs.create_release == 'true' }}
