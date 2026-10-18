@@ -8,10 +8,6 @@ on:
 permissions:
   contents: write
 
-env:
-  JOJO_RESOLUTION: ${{ vars.JOJO_RESOLUTION || '720p' }}
-  JOJO_CREATE_RELEASE: ${{ vars.JOJO_CREATE_RELEASE || 'true' }}
-
 jobs:
   download-extract-release:
     name: Download, Extract & Release
@@ -37,6 +33,12 @@ jobs:
           mkdir -p /tmp/jojo
           cd /tmp/jojo
 
+          # Get resolution from repository variable or default to 720p
+          resolution="${{ vars.JOJO_RESOLUTION }}"
+          if [ -z "$resolution" ]; then
+            resolution="720p"
+          fi
+
           python3 -c "
 import os, json
 urls = {
@@ -44,7 +46,7 @@ urls = {
     '480p': 'https://pixeldrain.com/api/file/qmkbjjRz',
     '720p': 'https://pixeldrain.com/api/file/b5gcL8LM',
 }
-resolution = '$JOJO_RESOLUTION'
+resolution = '$resolution'
 url = urls[resolution]
 filename = f'Alqanime_Jojo_BD_{resolution}.zip'
 print(f'Downloading {url}')
@@ -81,14 +83,27 @@ print(f'zip_path=/tmp/jojo/{filename}')
           echo "count=$count" >> $GITHUB_OUTPUT
 
       - name: Generate M3U with release URLs
-        if: ${{ env.JOJO_CREATE_RELEASE == 'true' }}
+        id: generate_m3u
         run: |
+          # Check if release should be created
+          create_release="${{ vars.JOJO_CREATE_RELEASE }}"
+          if [ -z "$create_release" ]; then
+            create_release="true"
+          fi
+
+          if [ "$create_release" != "true" ]; then
+            echo "create_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "create_release=true" >> $GITHUB_OUTPUT
+
           python3 -c "
 import os
 
 repo = '${{ github.repository }}'
 run_number = '${{ github.run_number }}'
-resolution = '$JOJO_RESOLUTION'
+resolution = '$resolution'
 release_tag = f'jojo2012-{resolution}-{run_number}'
 base_url = f'https://github.com/{repo}/releases/download/{release_tag}/'
 
@@ -118,13 +133,13 @@ print(f'm3u_file={m3u_file}')
 " >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        if: ${{ env.JOJO_CREATE_RELEASE == 'true' }}
+        if: ${{ steps.generate_m3u.outputs.create_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
-          name: "JoJo 2012 $JOJO_RESOLUTION (Episodes 1-26)"
+          name: "JoJo 2012 $resolution (Episodes 1-26)"
           body: |
-            JoJo's Bizarre Adventure 2012 - $JOJO_RESOLUTION
+            JoJo's Bizarre Adventure 2012 - $resolution
             
             Episodes 1-9: Phantom Blood
             Episodes 10-26: Battle Tendency
@@ -140,7 +155,7 @@ print(f'm3u_file={m3u_file}')
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Commit M3U to repo
-        if: ${{ env.JOJO_CREATE_RELEASE == 'true' }}
+        if: ${{ steps.generate_m3u.outputs.create_release == 'true' }}
         run: |
           cd ${{ github.workspace }}
           git config user.name "github-actions[bot]"
@@ -151,7 +166,7 @@ print(f'm3u_file={m3u_file}')
           if git diff --staged --quiet; then
             echo "No M3U changes"
           else
-            git commit -m "Add $JOJO_RESOLUTION M3U with release URLs"
+            git commit -m "Add $resolution M3U with release URLs"
             git push origin main
             echo "M3U committed and pushed"
           fi
@@ -159,9 +174,9 @@ print(f'm3u_file={m3u_file}')
       - name: Summary
         run: |
           echo "## Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Resolution: $JOJO_RESOLUTION" >> $GITHUB_STEP_SUMMARY
+          echo "- Resolution: $resolution" >> $GITHUB_STEP_SUMMARY
           echo "- Episodes found: ${{ steps.extract.outputs.count }}" >> $GITHUB_STEP_SUMMARY
-          if [ "$JOJO_CREATE_RELEASE" = "true" ]; then
+          if [ "${{ steps.generate_m3u.outputs.create_release }}" = "true" ]; then
             echo "- Release: ${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
             echo "- M3U: ${{ steps.generate_m3u.outputs.m3u_file }}" >> $GITHUB_STEP_SUMMARY
             echo "- Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY

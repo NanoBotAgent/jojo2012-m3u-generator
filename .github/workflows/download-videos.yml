@@ -8,9 +8,6 @@ on:
 permissions:
   contents: write
 
-env:
-  VIDEO_URLS_JSON: ${{ vars.VIDEO_URLS || '[]' }}
-
 jobs:
   download-and-commit:
     name: Download Videos & Update M3U
@@ -36,7 +33,14 @@ jobs:
 
       - name: Parse video URLs
         run: |
-          echo '${{ env.VIDEO_URLS_JSON }}' > video_urls.json
+          # Use repository variable or empty array
+          video_urls="${{ vars.VIDEO_URLS }}"
+          if [ -n "$video_urls" ]; then
+            echo "$video_urls" > video_urls.json
+          else
+            echo '[]' > video_urls.json
+            echo "::warning::No video URLs provided. Set VIDEO_URLS repository variable."
+          fi
           cat video_urls.json
 
       - name: Download videos
