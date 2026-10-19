@@ -1,0 +1,16 @@
+name: Dispatch Canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: 'note'
+        required: false
+        default: 'canary'
+        type: string
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "canary ok ${{ inputs.note }}"
