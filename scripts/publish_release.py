@@ -100,7 +100,8 @@ def pick_workdir():
 
     GitHub runners expose several filesystems and the root one is small.
     The 6.7 GB archive has to live somewhere with room, so measure instead
-    of assuming.
+    of assuming. Free space alone is not enough: a directory can be
+    readable and still not writable, so create a file to prove it.
     """
     candidates = []
     env_dir = os.environ.get("WORK_DIR")
@@ -113,15 +114,22 @@ def pick_workdir():
         try:
             os.makedirs(path, exist_ok=True)
             usage = shutil.disk_usage(path)
-        except OSError:
+            probe = os.path.join(path, ".jojo-write-probe")
+            with open(probe, "wb") as fh:
+                fh.write(b"0")
+            os.remove(probe)
+        except OSError as exc:
+            log("  candidate %-28s not writable (%s)" % (path, exc))
             continue
-        log("  candidate %-28s %8.1f GB free" % (path, usage.free / 1073741824.0))
+        log("  candidate %-28s %8.1f GB free, writable" % (path, usage.free / 1073741824.0))
         if best is None or usage.free > best[1]:
             best = (path, usage.free)
     if best is None:
         raise SystemExit("::error::No writable work directory found")
     log("  work dir: %s (%.1f GB free)" % (best[0], best[1] / 1073741824.0))
-    return tempfile.mkdtemp(prefix="jojo-", dir=best[0])
+    workdir = tempfile.mkdtemp(prefix="jojo-", dir=best[0])
+    log("  created %s" % workdir)
+    return workdir
 
 
 def download_archive(url, dest, attempt=1):
