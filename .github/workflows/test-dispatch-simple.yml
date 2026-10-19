@@ -15,4 +15,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Message: ${{ github.event.inputs.message }}"
+      - name: Echo message
+        run: |
+          echo "Message: ${{ github.event.inputs.message }}"
