@@ -242,21 +242,43 @@ def create_release(owner, repo, tag, name, body):
 def upload_asset(owner, repo, release_id, filename, path, attempt=1):
     requests = requests_module()
     url = f"{UPLOADS}/repos/{owner}/{repo}/releases/{release_id}/assets?name={filename}"
+    size = os.path.getsize(path)
+    upload_headers = {
+        **headers(),
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(size),
+    }
     with open(path, "rb") as fh:
-        resp = requests.post(
-            url,
-            headers={**headers(), "Content-Type": "application/octet-stream"},
-            data=fh,
-            timeout=(60, 3600),
-        )
-    if resp.status_code in (201, 422):
-        return resp.status_code
+        resp = requests.post(url, headers=upload_headers, data=fh, timeout=(60, 3600))
+    if resp.status_code == 201:
+        return 201
+    if resp.status_code == 422:
+        # Already uploaded by an earlier attempt. If the stored asset is the
+        # same size, keep it. If it is a different size, the earlier upload
+        # was truncated, so replace it rather than fail forever.
+        listing = requests.get(
+            f"{API}/repos/{owner}/{repo}/releases/{release_id}/assets",
+            headers=headers(), timeout=60)
+        if listing.status_code == 200:
+            for asset in listing.json():
+                if asset.get("name") != filename:
+                    continue
+                if asset.get("size") == size:
+                    log("    asset already present with matching size, keeping it")
+                    return 422
+                log("    asset exists with size %s, expected %s, replacing"
+                    % (asset.get("size"), size))
+                requests.delete(f"{API}/repos/{owner}/{repo}/releases/assets/{asset['id']}",
+                                headers=headers(), timeout=60)
+                time.sleep(2)
+                return upload_asset(owner, repo, release_id, filename, path, attempt)
+        raise SystemExit(f"::error::Upload of {filename} rejected: {resp.text[:300]}")
     if resp.status_code >= 500 and attempt < 4:
         wait = 15 * attempt
         log(f"    retry {attempt} in {wait}s (HTTP {resp.status_code})")
         time.sleep(wait)
         return upload_asset(owner, repo, release_id, filename, path, attempt + 1)
-    raise SystemExit(f"::error::Upload of {filename} failed ({resp.status_code}): {resp.text[:400]}")
+    raise SystemExit(f"::error::Upload of {filename} failed ({resp.status_code}): {resp.text[:300]}")
 
 
 def extract_from_zip(path, member, dest, expected):
