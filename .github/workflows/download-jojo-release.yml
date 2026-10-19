@@ -3,6 +3,16 @@ name: Download JoJo 2012 Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      resolution:
+        description: Resolution to build
+        required: false
+        default: 720p
+      create_release:
+        description: Create GitHub Release with videos
+        required: false
+        default: 'true'
 
 permissions:
   contents: write
@@ -32,7 +42,7 @@ jobs:
           mkdir -p /tmp/jojo
           cd /tmp/jojo
 
-          resolution="${{ vars.JOJO_RESOLUTION }}"
+          resolution="${{ inputs.resolution || vars.JOJO_RESOLUTION }}"
           if [ -z "$resolution" ]; then
             resolution="720p"
           fi
@@ -89,12 +99,12 @@ ENDOFSCRIPT
       - name: Generate M3U with release URLs
         id: generate_m3u
         run: |
-          resolution="${{ vars.JOJO_RESOLUTION }}"
+          resolution="${{ inputs.resolution || vars.JOJO_RESOLUTION }}"
           if [ -z "$resolution" ]; then
             resolution="720p"
           fi
           
-          create_release="${{ vars.JOJO_CREATE_RELEASE }}"
+          create_release="${{ inputs.create_release || vars.JOJO_CREATE_RELEASE }}"
           if [ -z "$create_release" ]; then
             create_release="true"
           fi
@@ -147,7 +157,7 @@ ENDOFSCRIPT
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.generate_m3u.outputs.release_tag }}
-          name: "JoJo 2012 ${{ vars.JOJO_RESOLUTION || '720p' }} (Episodes 1-26)"
+          name: "JoJo 2012 ${{ inputs.resolution || vars.JOJO_RESOLUTION || '720p' }} (Episodes 1-26)"
           body: |
             JoJo's Bizarre Adventure 2012 - ${{ vars.JOJO_RESOLUTION || '720p' }}
             
@@ -176,7 +186,7 @@ ENDOFSCRIPT
           if git diff --staged --quiet; then
             echo "No M3U changes"
           else
-            git commit -m "Add ${{ vars.JOJO_RESOLUTION || '720p' }} M3U with release URLs"
+            git commit -m "Add ${{ inputs.resolution || vars.JOJO_RESOLUTION || '720p' }} M3U with release URLs"
             git push origin main
             echo "M3U committed and pushed"
           fi
@@ -184,7 +194,7 @@ ENDOFSCRIPT
       - name: Summary
         run: |
           echo "## Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Resolution: ${{ vars.JOJO_RESOLUTION || '720p' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Resolution: ${{ inputs.resolution || vars.JOJO_RESOLUTION || '720p' }}" >> $GITHUB_STEP_SUMMARY
           echo "- Episodes found: ${{ steps.extract.outputs.count }}" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.generate_m3u.outputs.create_release }}" = "true" ]; then
             echo "- Release: ${{ steps.generate_m3u.outputs.release_tag }}" >> $GITHUB_STEP_SUMMARY
