@@ -8,8 +8,6 @@ on:
         required: true
         default: 'Hello World'
         type: string
-  push:
-    branches: [main]
 
 jobs:
   test:
@@ -17,4 +15,4 @@ jobs:
     steps:
       - name: Echo message
         run: |
-          echo "Message: ${{ github.event.inputs.message }}"
+          echo "Message: ${{ inputs.message }}"

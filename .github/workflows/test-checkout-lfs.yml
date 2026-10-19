@@ -2,8 +2,6 @@ name: Test Checkout LFS
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 jobs:
   test:

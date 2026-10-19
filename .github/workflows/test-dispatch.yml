@@ -15,4 +15,4 @@ jobs:
     steps:
       - name: Echo input
         run: |
-          echo "Test input: ${{ github.event.inputs.test_input }}"
+          echo "Test input: ${{ inputs.test_input }}"
