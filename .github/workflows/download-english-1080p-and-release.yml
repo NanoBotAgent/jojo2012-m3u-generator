@@ -1,0 +1,171 @@
+name: Build JoJo 2012 1080p with English Soft Subs
+
+on:
+  workflow_dispatch:
+    inputs:
+      episodes:
+        description: 'Episode numbers to build (e.g. 1-26, or 1,2,5)'
+        required: false
+        default: '1-26'
+      create_release:
+        description: 'Create the GitHub Release and upload assets'
+        required: false
+        default: 'true'
+        type: string
+      subtitle_track:
+        description: 'Subtitle stream index inside the source file to carry over'
+        required: false
+        default: '3'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    name: Plan episodes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      episodes: ${{ steps.matrix.outputs.episodes }}
+      full_set: ${{ steps.matrix.outputs.full_set }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg aria2
+          pip install requests
+          echo "ffprobe: $(command -v ffprobe || echo MISSING)"
+          aria2c --version | head -1
+          df -h / /tmp | sed 's/^/  /'
+
+      - name: List the episodes in the torrent
+        run: python3 scripts/remux_release.py plan
+
+      - name: Build the job matrix
+        id: matrix
+        env:
+          EPISODES: ${{ inputs.episodes }}
+        run: python3 scripts/remux_release.py matrix --episodes "$EPISODES"
+
+      - name: Create release
+        id: release
+        if: ${{ inputs.create_release == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="jojo2012-eng-1080p"
+          python3 scripts/remux_release.py release --tag "$TAG"
+
+  build:
+    name: Build episode ${{ matrix.episode }}
+    needs: plan
+    if: ${{ inputs.create_release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        episode: ${{ fromJSON(needs.plan.outputs.episodes) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg aria2
+          pip install requests
+
+      - name: Download, remux and upload
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.plan.outputs.release_id }}
+          SUBTITLE_TRACK: ${{ inputs.subtitle_track }}
+          JOJO_FRAME_DIR: ${{ runner.temp }}/frames-ep${{ matrix.episode }}
+        run: |
+          python3 scripts/remux_release.py episode \
+            --episode ${{ matrix.episode }} \
+            --release-id "$RELEASE_ID" \
+            --subtitle-track "$SUBTITLE_TRACK"
+
+      - name: Upload sample frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frames-1080p-ep${{ matrix.episode }}
+          path: ${{ runner.temp }}/frames-ep${{ matrix.episode }}/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  m3u:
+    name: Write M3U
+    needs: [plan, build]
+    # Only on a full 1-26 build. A partial run must not repoint the playlist.
+    if: ${{ inputs.create_release == 'true' && needs.plan.outputs.full_set == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Write M3U
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+        run: |
+          python3 scripts/remux_release.py m3u \
+            --tag "$RELEASE_TAG" \
+            --out jojo2012-1080p.m3u
+
+      - name: Commit M3U
+        env:
+          M3U_FILE: jojo2012-1080p.m3u
+        run: |
+          cd "${{ github.workspace }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$M3U_FILE"
+          if git diff --staged --quiet; then
+            echo "No M3U changes"
+          else
+            git commit -m "Add the JoJo 2012 1080p M3U with soft English subs"
+            git pull --rebase origin main
+            git push origin HEAD:main
+            echo "M3U committed and pushed"
+          fi
+
+      - name: Summary
+        env:
+          RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+        run: |
+          {
+            echo "## Summary"
+            echo "- Release: https://github.com/${{ github.repository }}/releases/tag/$RELEASE_TAG"
+            echo "- M3U: jojo2012-1080p.m3u"
+            echo "- Episodes: 26 (1080p HEVC, soft English subtitle track)"
+          } >> "$GITHUB_STEP_SUMMARY"
