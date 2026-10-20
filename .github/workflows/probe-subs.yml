@@ -7,10 +7,14 @@ on:
         description: 'Comma separated nyaa torrent IDs to probe'
         required: false
         default: '1299586,1681123'
-      maxwait:
-        description: 'Seconds to wait for each episode file to complete'
+      target:
+        description: 'Regex matching the episode file path (e.g. S01E01)'
         required: false
-        default: '1200'
+        default: 'S01E01'
+      maxwait:
+        description: 'Seconds to wait for the episode file to complete'
+        required: false
+        default: '1500'
 
 permissions:
   contents: read
@@ -19,7 +23,7 @@ jobs:
   probe:
     name: Probe subtitle tracks
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +40,7 @@ jobs:
       - name: Probe each candidate
         env:
           CANDIDATES: ${{ inputs.candidates }}
+          TARGET: ${{ inputs.target }}
           MAXWAIT: ${{ inputs.maxwait }}
         run: |
           set -u
@@ -50,59 +55,50 @@ jobs:
               echo "  !! torrent fetch failed"
               continue
             fi
+            echo "  --- aria2 --show-files raw (first 4 lines, escapes visible) ---"
+            aria2c --show-files "$ID.torrent" 2>&1 | head -4 | cat -A | sed 's/^/    /' | cut -c1-220
             aria2c --show-files "$ID.torrent" 2>/dev/null > "$ID.files"
-            echo "  --- file listing sample ---"
-            head -6 "$ID.files" | sed 's/^/    /'
-            echo "  --- picking episode 1 ---"
-            python3 - "$ID.files" <<'PYEOF' > "$ID.pick"
+            echo "  --- picking episode via aria2's own index ---"
+            python3 - "$ID.files" "$TARGET" <<'PYEOF' > "$ID.pick"
           import re, sys
+          raw = open(sys.argv[1], encoding='utf-8', errors='replace').read().splitlines()
+          target = re.compile(sys.argv[2], re.I)
           rows = []
-          for line in open(sys.argv[1], encoding='utf-8', errors='replace'):
-              line = line.rstrip('\n')
+          for line in raw:
               if '|' not in line:
                   continue
-              parts = line.split('|')
-              if len(parts) < 3:
+              head, rest = line.split('|', 1)
+              head = head.strip()
+              if not head.isdigit():
                   continue
-              idx = parts[0].strip()
-              path = parts[1].strip()
-              try:
-                  size = int(parts[2].strip())
-              except ValueError:
-                  continue
-              if not idx.isdigit():
-                  continue
-              rows.append((int(idx), path, size))
-          excl = re.compile(r'OVA|NCOP|NCED|Promo|Special|Extra|Menu|Preview|Commentary', re.I)
-          def ok(p):
-              return not excl.search(p)
-          picks = []
-          for pat in (r'S01E0?1\b', r'Season 01.*[-_ ]0?1\.(mkv|mp4)$', r'Part 0?1.*[-_ ]0?1\.(mkv|mp4)$',
-                      r'[-_ ]0?1\.(mkv|mp4)$'):
-              picks = [r for r in rows if re.search(pat, r[1], re.I) and ok(r[1])]
-              if picks:
+              rows.append((int(head), rest.strip()))
+          picked = None
+          for idx, path in rows:
+              if target.search(path):
+                  picked = (idx, path)
                   break
-          if not picks:
-              picks = [r for r in rows if ok(r[1]) and r[1].lower().endswith(('.mkv', '.mp4'))]
-          if not picks:
+          if picked is None:
+              for idx, path in rows:
+                  if re.search(r'\.(mkv|mp4)$', path, re.I) and not re.search(r'OVA|NCOP|NCED|Promo|Special|Extra|Menu|Preview', path, re.I):
+                      picked = (idx, path)
+                      break
+          if picked is None:
               print('NONE')
               raise SystemExit
-          picks.sort(key=lambda r: (len(r[1]), r[0]))
-          idx, path, size = picks[0]
+          idx, path = picked
           print(idx)
           print(path)
-          print(size)
           print(path.split('/')[-1])
           PYEOF
             IDX=$(sed -n 1p "$ID.pick")
             if [ "$IDX" = "NONE" ]; then
-              echo "  !! no episode file found"
+              echo "  !! no episode file found in listing"
               continue
             fi
             FNAME=$(sed -n 2p "$ID.pick")
-            FSIZE=$(sed -n 3p "$ID.pick")
-            BASENAME=$(sed -n 4p "$ID.pick")
-            echo "  picked index=$IDX size=$FSIZE file=$FNAME"
+            BASENAME=$(sed -n 3p "$ID.pick")
+            echo "  picked index=$IDX"
+            echo "  path=$FNAME"
             mkdir -p "d$ID"
             aria2c --dir="d$ID" --select-file="$IDX" --allow-overwrite=true \
               --auto-file-renaming=false --file-allocation=none --bt-enable-lpd=true \
@@ -122,15 +118,13 @@ jobs:
             done
             kill "$ARIA_PID" 2>/dev/null || true
             wait "$ARIA_PID" 2>/dev/null || true
+            echo "  --- aria2 tail ---"
+            tail -6 "$ID.aria2.out" | sed 's/^/    /' | cut -c1-200
             echo "  --- files on disk ---"
-            find "d$ID" -type f -printf '    %12s  %f\n' | sort -k2 | head -8
-            FOUND=$(find "d$ID" -type f -name "*${BASENAME}" -size +1M | head -1)
+            find "d$ID" -type f -printf '    %12s  %f\n' | sort -k2 | head -10
+            FOUND=$(find "d$ID" -type f -name "${BASENAME}" | head -1)
             if [ -z "$FOUND" ]; then
-              FOUND=$(find "d$ID" -type f -size +10M | head -1)
-            fi
-            if [ -z "$FOUND" ]; then
-              echo "  !! no episode file downloaded"
-              tail -14 "$ID.aria2.log" 2>/dev/null | sed 's/^/     /'
+              echo "  !! expected file '$BASENAME' not found"
               continue
             fi
             echo "  probing: $FOUND ($(stat -c%s "$FOUND") bytes)"
