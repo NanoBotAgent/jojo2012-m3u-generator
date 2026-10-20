@@ -26,8 +26,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from episode_titles import display_name
-from publish_release import (create_release, emit, log, repo_parts, upload_asset,
-                             write_m3u)
+from publish_release import (API, create_release, emit, headers, log, repo_parts,
+                             requests_module, upload_asset, write_m3u)
 
 TORRENT_ID = "1681123"
 TORRENT_URL = "https://nyaa.si/download/%s.torrent" % TORRENT_ID
@@ -194,7 +194,9 @@ def parse_episodes(spec):
 def cmd_matrix(args):
     numbers = parse_episodes(args.episodes)
     emit("episodes", json.dumps(numbers))
-    log("  matrix: %s" % json.dumps(numbers))
+    full = numbers == list(range(1, 27))
+    emit("full_set", "true" if full else "false")
+    log("  matrix: %s (full set: %s)" % (json.dumps(numbers), full))
     return 0
 
 
@@ -390,9 +392,30 @@ def cmd_episode(args):
     return 0
 
 
+def release_asset_names(owner, repo, tag):
+    """Return the set of asset names attached to a release."""
+    requests = requests_module()
+    resp = requests.get(f"{API}/repos/{owner}/{repo}/releases/tags/{tag}",
+                        headers=headers(), timeout=60)
+    if resp.status_code != 200:
+        raise SystemExit("::error::Could not read release %s (%d)" % (tag, resp.status_code))
+    return {a.get("name") for a in resp.json().get("assets", [])}
+
+
 def cmd_m3u(args):
     owner, repo = repo_parts()
     episodes = [{"index": n, "filename": ASSET_TEMPLATE % n} for n in range(1, 27)]
+
+    # Never repoint the M3U at a release that is missing episodes. The M3U in
+    # the repo is the working deliverable, so a partial build must not touch it.
+    present = release_asset_names(owner, repo, args.tag)
+    wanted = [ep["filename"] for ep in episodes]
+    missing = [name for name in wanted if name not in present]
+    if missing:
+        raise SystemExit("::error::Release %s is missing %d asset(s): %s"
+                         % (args.tag, len(missing), ", ".join(missing[:6])))
+    log("  release holds all %d episode assets" % len(wanted))
+
     base_url = "https://github.com/%s/%s/releases/download/%s" % (owner, repo, args.tag)
     write_m3u(args.out, episodes, base_url)
     log("  first entry: %s" % display_name(1))

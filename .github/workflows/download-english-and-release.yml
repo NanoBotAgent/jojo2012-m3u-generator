@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       episodes: ${{ steps.matrix.outputs.episodes }}
+      full_set: ${{ steps.matrix.outputs.full_set }}
       release_id: ${{ steps.release.outputs.release_id }}
       release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
@@ -116,7 +117,8 @@ jobs:
   m3u:
     name: Write M3U
     needs: [plan, build]
-    if: ${{ inputs.create_release == 'true' }}
+    # Only on a full 1-26 build. A partial run must not repoint the M3U.
+    if: ${{ inputs.create_release == 'true' && needs.plan.outputs.full_set == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
