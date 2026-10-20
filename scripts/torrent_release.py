@@ -82,55 +82,47 @@ def workdir_root():
     return writable[0][0]
 
 
-def bdecode(data, i=0):
-    """Minimal bencode decoder."""
-    char = data[i:i + 1]
-    if char == b"i":
-        j = data.index(b"e", i)
-        return int(data[i + 1:j]), j + 1
-    if char == b"l":
-        i += 1
-        items = []
-        while data[i:i + 1] != b"e":
-            value, i = bdecode(data, i)
-            items.append(value)
-        return items, i + 1
-    if char == b"d":
-        i += 1
-        mapping = {}
-        while data[i:i + 1] != b"e":
-            key, i = bdecode(data, i)
-            value, i = bdecode(data, i)
-            mapping[key] = value
-        return mapping, i + 1
-    j = data.index(b":", i)
-    length = int(data[i:j])
-    return data[j + 1:j + 1 + length], j + 1 + length
-
-
 def torrent_files(path):
-    """Return [(index, path, size)] in the same order aria2 numbers them."""
-    with open(path, "rb") as fh:
-        data = fh.read()
-    meta, _ = bdecode(data)
-    info = meta[b"info"]
-    if b"files" not in info:
-        raise SystemExit("::error::Torrent has no file list")
+    """Return [(index, path)] using aria2's own numbering.
+
+    The lengths recorded in the torrent metadata do not match the files the
+    swarm actually serves, so the metadata is not trusted for anything.
+    aria2's --show-files output is the authority, because --select-file is
+    resolved against exactly that list.
+    """
+    out = subprocess.run(["aria2c", "--show-files", path],
+                         capture_output=True, text=True, check=True).stdout
     files = []
-    for index, entry in enumerate(info[b"files"], start=1):
-        parts = entry.get(b"path") or []
-        name = b"/".join(parts).decode("utf-8", "replace")
-        files.append((index, name, int(entry.get(b"length", 0))))
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        fields = [f.strip() for f in line.split("|")]
+        head = fields[0]
+        if not head.isdigit():
+            continue
+        # The listing has been seen as "IDX|PATH" and as "IDX|PATH|SIZE".
+        # The path is the field that carries a file extension.
+        path_field = None
+        for field in fields[1:]:
+            if re.search(r"\.[A-Za-z0-9]{2,4}$", field):
+                path_field = field
+                break
+        if path_field is None:
+            path_field = fields[1] if len(fields) > 1 else ""
+        files.append((int(head), path_field))
     if not files:
-        raise SystemExit("::error::Torrent file list is empty")
+        raise SystemExit("::error::aria2 listed no files for the torrent")
     return files
+
+
+SEASON_DIR = "Season 01"
 
 
 def season_one_episodes(files):
     """Pick the Season 01 files and map them onto episode numbers."""
     episodes = {}
-    for index, path, size in files:
-        if "Season 01" not in path:
+    for index, path in files:
+        if SEASON_DIR not in path:
             continue
         match = re.search(r" - (\d{2})\.mkv$", path)
         if not match:
@@ -140,7 +132,7 @@ def season_one_episodes(files):
             continue
         if number in episodes:
             raise SystemExit("::error::Two files claim episode %d" % number)
-        episodes[number] = {"episode": number, "index": index, "path": path, "size": size}
+        episodes[number] = {"episode": number, "index": index, "path": path}
     missing = [n for n in range(1, 27) if n not in episodes]
     if missing:
         raise SystemExit("::error::Torrent is missing episodes: %s" % missing)
@@ -170,12 +162,10 @@ def build_plan(dest=None):
 
 def cmd_plan(args):
     episodes = build_plan()
-    total = sum(ep["size"] for ep in episodes)
     log("  season 01 episodes: %d" % len(episodes))
-    log("  total size       : %.2f GiB" % (total / 1073741824.0))
     for ep in episodes:
-        log("    ep %2d  idx %3d  %8.1f MB  %s"
-            % (ep["episode"], ep["index"], ep["size"] / 1048576.0, os.path.basename(ep["path"])))
+        log("    ep %2d  idx %3d  %s"
+            % (ep["episode"], ep["index"], ep["path"].split("/")[-1]))
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump({"torrent_id": TORRENT_ID, "episodes": episodes}, fh, indent=2)
@@ -231,8 +221,13 @@ def cmd_release(args):
     return 0
 
 
-def download_episode(torrent, index, outdir, expected):
-    """Pull one file out of the torrent with aria2 and return its path."""
+def download_episode(torrent, index, outdir, episode):
+    """Pull one file out of the torrent with aria2 and return its path.
+
+    The length recorded in the torrent metadata does not match the file the
+    swarm actually serves, so the downloaded file is identified by its path
+    and checked with ffprobe rather than by comparing sizes.
+    """
     os.makedirs(outdir, exist_ok=True)
     cmd = [
         "aria2c", "--dir=" + outdir, "--select-file=%d" % index,
@@ -246,7 +241,7 @@ def download_episode(torrent, index, outdir, expected):
         cmd.append("--bt-tracker=" + tracker)
     cmd.append(torrent)
 
-    log("  downloading episode (aria2 select-file %d)" % index)
+    log("  downloading episode %d (aria2 select-file %d)" % (episode, index))
     started = time.time()
     try:
         run(cmd, timeout=DOWNLOAD_TIMEOUT)
@@ -258,18 +253,22 @@ def download_episode(torrent, index, outdir, expected):
     found = []
     for base, _dirs, names in os.walk(outdir):
         for name in names:
-            full = os.path.join(base, name)
-            if name.endswith(".mkv") and os.path.getsize(full) > 100000000:
-                found.append(full)
+            if name.endswith(".mkv"):
+                found.append(os.path.join(base, name))
     if not found:
         raise SystemExit("::error::No episode file landed on disk")
-    path = max(found, key=os.path.getsize)
+    pattern = re.compile(r" - %02d\.mkv$" % episode)
+    named = [p for p in found
+             if pattern.search(os.path.basename(p)) and SEASON_DIR in p]
+    if len(named) != 1:
+        raise SystemExit("::error::Expected exactly one episode %d file, found %d: %s"
+                         % (episode, len(named), named))
+    path = named[0]
     size = os.path.getsize(path)
     elapsed = max(time.time() - started, 1)
     log("  downloaded %.1f MB in %.0f s (%.1f MB/s)"
         % (size / 1048576.0, elapsed, size / 1048576.0 / elapsed))
-    if expected and size != expected:
-        raise SystemExit("::error::Size mismatch: %d != %d" % (size, expected))
+    log("  file: %s" % path.replace(outdir, "").lstrip("/"))
     return path
 
 
@@ -283,7 +282,7 @@ def extract_subtitle(source, dest, track):
     return dest
 
 
-def transcode(source, subtitle, dest):
+def transcode(source, subtitle, dest, cwd):
     """Downscale to 720p, burn the English subs in, and encode H.264.
 
     The filter order matters. The video is scaled and converted to 8-bit
@@ -291,6 +290,10 @@ def transcode(source, subtitle, dest):
     frame it is given and 10-bit input is an unnecessary complication. The
     ASS file carries its own PlayResX and PlayResY, so libass scales the
     text down to the new frame size on its own.
+
+    The subtitle file is referred to by bare name and ffmpeg runs from the
+    directory that holds it. A full path would need escaping for the filter
+    syntax, and the work path can contain characters that break it.
     """
     vf = "scale=%d:%d,format=yuv420p,subtitles=%s" % (WIDTH, HEIGHT, subtitle)
     cmd = [
@@ -304,7 +307,7 @@ def transcode(source, subtitle, dest):
     ]
     log("  transcoding to 720p H.264 with burned-in English subs")
     started = time.time()
-    run(cmd, cwd=os.path.dirname(os.path.abspath(subtitle)))
+    run(cmd, cwd=cwd)
     elapsed = max(time.time() - started, 1)
     size = os.path.getsize(dest)
     log("  encoded %.1f MB in %.0f s" % (size / 1048576.0, elapsed))
@@ -315,7 +318,7 @@ def verify_output(path):
     """Confirm the result is 720p video with audio and no leftover sub track."""
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
-         "stream=index,codec_type,codec_name,width,height:stream_tags=language,title",
+         "format=duration:stream=index,codec_type,codec_name,width,height:stream_tags=language,title",
          "-of", "json", path],
         capture_output=True, text=True, check=True).stdout
     streams = json.loads(out).get("streams", [])
@@ -328,8 +331,11 @@ def verify_output(path):
         raise SystemExit("::error::Output has no audio track")
     if subs:
         raise SystemExit("::error::Output still carries %d subtitle tracks" % len(subs))
-    log("  verified: %s %dx%d, %d audio track(s), no subtitle track"
-        % (video[0].get("codec_name"), WIDTH, HEIGHT, len(audio)))
+    duration = float(json.loads(out).get("format", {}).get("duration", 0))
+    log("  verified: %s %dx%d, %d audio track(s), no subtitle track, %.0f s long"
+        % (video[0].get("codec_name"), WIDTH, HEIGHT, len(audio), duration))
+    if duration < 1000 or duration > 1800:
+        raise SystemExit("::error::Unexpected duration %.0f s" % duration)
 
 
 def capture_frames(video, outdir, stamps=(120, 420, 1200)):
@@ -366,9 +372,10 @@ def cmd_episode(args):
     try:
         torrent = os.path.join(workdir, "source.torrent")
         fetch_torrent(torrent)
-        source = download_episode(torrent, ep["index"], os.path.join(workdir, "src"), ep["size"])
+        source = download_episode(torrent, ep["index"], os.path.join(workdir, "src"),
+                                  args.episode)
         extract_subtitle(source, os.path.join(workdir, "subs.ass"), args.subtitle_track)
-        output = transcode(source, "subs.ass", os.path.join(workdir, "out.mp4"))
+        output = transcode(source, "subs.ass", os.path.join(workdir, "out.mp4"), workdir)
         verify_output(output)
         frame_dir = os.environ.get("JOJO_FRAME_DIR") or os.path.join(workdir, "frames")
         capture_frames(output, frame_dir)
