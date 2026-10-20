@@ -6,7 +6,7 @@ on:
       candidates:
         description: 'Comma separated nyaa torrent IDs to probe'
         required: false
-        default: '1299586,1681123'
+        default: '1681123'
       maxwait:
         description: 'Seconds to wait for the episode file to complete'
         required: false
@@ -51,8 +51,8 @@ jobs:
               continue
             fi
             aria2c --show-files "$ID.torrent" 2>/dev/null > "$ID.files"
-            echo "  --- episode 1 candidates in listing ---"
-            grep -iE "S01E01| - 01\.mkv|S1.*01\.mkv" "$ID.files" | head -3 | cut -c1-190 | sed 's/^/    /'
+            echo "  --- episode 1 lines in listing ---"
+            grep -nE "S01E01| - 01\.mkv" "$ID.files" | head -4 | cut -c1-200 | sed 's/^/    /'
             python3 - "$ID.files" <<'PYEOF' > "$ID.pick"
           import re, sys
           rows = []
@@ -69,7 +69,7 @@ jobs:
           def ok(p):
               return not excl.search(p)
           picked = None
-          for pat in (r'S01E0?1\b', r'[-_ ]0?1\.mkv$'):
+          for pat in (r'S01E0?1\b', r' - 0?1\.mkv$'):
               cand = [r for r in rows if re.search(pat, r[1], re.I) and ok(r[1])]
               if cand:
                   picked = cand[0]
@@ -114,15 +114,16 @@ jobs:
             done
             kill "$ARIA_PID" 2>/dev/null || true
             wait "$ARIA_PID" 2>/dev/null || true
-            echo "  --- aria2 stdout tail ---"
-            tail -12 "$ID.aria2.out" 2>/dev/null | cut -c1-190 | sed 's/^/    /'
-            echo "  --- aria2 log tail ---"
-            tail -12 "$ID.aria2.log" 2>/dev/null | cut -c1-190 | sed 's/^/    /'
+            echo "  --- aria2 result ---"
+            grep -E "OK  \||ERR|error" "$ID.aria2.out" | head -4 | cut -c1-200 | sed 's/^/    /'
             echo "  --- files on disk ---"
             find "d$ID" -type f -printf '    %12s  %f\n' | sort -k2 | head -12
-            FOUND=$(find "d$ID" -type f -printf '%s\t%p\n' | awk -F'\t' '$2 ~ /\.mkv$/ && $1 > 100000000 {print $2; exit}')
+            FOUND=$(find "d$ID" -type f -name "${BASENAME}" | head -1)
             if [ -z "$FOUND" ]; then
-              echo "  !! no complete episode file on disk"
+              FOUND=$(find "d$ID" -type f -name "*.mkv" -printf '%s\t%p\n' | awk -F'\t' '$1 > 100000000 {print $2; exit}')
+            fi
+            if [ -z "$FOUND" ]; then
+              echo "  !! no episode file on disk"
               continue
             fi
             echo "  probing: $FOUND ($(stat -c%s "$FOUND") bytes)"
@@ -132,30 +133,34 @@ jobs:
               echo "- file: $FOUND"
               echo ""
               echo '```'
-              ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height:stream_tags=language,title -of default=nw=1 "$FOUND"
+              ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height:stream_tags=language,title -of default=nw=1 "$FOUND" 2>&1 | head -40
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "  --- all streams ---"
-            ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height:stream_tags=language,title -of default=nw=1 "$FOUND" | sed 's/^/     /'
+            ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height:stream_tags=language,title -of default=nw=1 "$FOUND" 2>&1 | head -40 | sed 's/^/     /'
             echo "  --- subtitle tracks only ---"
-            ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of default=nw=1 "$FOUND" | sed 's/^/     /'
-            echo "  --- extract subtitle tracks ---"
-            for S in $(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$FOUND"); do
-              TAGS=$(ffprobe -v error -select_streams "s:$S" -show_entries stream_tags=language,title -of default=nw=1 "$FOUND" | tr '\n' ' ')
-              ffmpeg -v error -y -i "$FOUND" -map "0:$S" "srt/${ID}_s${S}.srt" 2>&1 | head -2 || true
+            ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of default=nw=1 "$FOUND" 2>&1 | head -30 | sed 's/^/     /'
+            echo "  --- extract + sample subtitle tracks ---"
+            for S in $(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$FOUND" 2>/dev/null); do
+              TAGS=$(ffprobe -v error -select_streams "s:$S" -show_entries stream_tags=language,title -of default=nw=1 "$FOUND" 2>/dev/null | tr '\n' ' ')
+              ffmpeg -v error -y -i "$FOUND" -map "0:$S" "srt/${ID}_s${S}.srt" >/dev/null 2>&1 || true
               SZ=$(stat -c%s "srt/${ID}_s${S}.srt" 2>/dev/null || echo 0)
               echo "     stream $S  tags=[$TAGS]  extracted=${SZ}B"
+              if [ "$SZ" -gt 200 ]; then
+                echo "       first dialogue lines:"
+                sed -n '1,24p' "srt/${ID}_s${S}.srt" | grep -vE '^[0-9]+$|^$' | head -4 | sed 's/^/         /'
+              fi
             done
-            ls -l srt/ | tail -8 | sed 's/^/     /'
             STEM="frames/${ID}"
-            ffmpeg -v error -y -ss 420 -i "$FOUND" -frames:v 1 "${STEM}_a.png" 2>&1 | head -2 || true
-            ffmpeg -v error -y -ss 1200 -i "$FOUND" -frames:v 1 "${STEM}_b.png" 2>&1 | head -2 || true
+            ffmpeg -v error -y -ss 420 -i "$FOUND" -frames:v 1 "${STEM}_a.png" >/dev/null 2>&1 || true
+            ffmpeg -v error -y -ss 1200 -i "$FOUND" -frames:v 1 "${STEM}_b.png" >/dev/null 2>&1 || true
             ls -l frames/ | tail -6 | sed 's/^/     /'
             rm -rf "d$ID"
           done
           echo ""
           echo "### frames"; ls -l frames/ | sed 's/^/  /'
           echo "### srt";   ls -l srt/   | sed 's/^/  /'
+          true
 
       - name: Upload frames and srt
         if: always()
