@@ -6,15 +6,15 @@ on:
       candidates:
         description: 'Comma separated nyaa torrent IDs to probe'
         required: false
-        default: '1299586,1681123,1470445'
-      episode:
-        description: 'Regex to pick the episode file inside each torrent'
+        default: '1299586,1681123'
+      target:
+        description: 'Substring of the episode file to pick (basename)'
         required: false
         default: 'S01E01'
       maxwait:
-        description: 'Seconds to wait for each episode file to complete'
+        description: 'Seconds to wait for the episode file to complete'
         required: false
-        default: '900'
+        default: '1200'
 
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
   probe:
     name: Probe subtitle tracks
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,49 +33,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg aria2
           echo "ffprobe: $(command -v ffprobe || echo MISSING)"
-          echo "ffmpeg : $(command -v ffmpeg || echo MISSING)"
           echo "aria2c : $(command -v aria2c || echo MISSING)"
           ffprobe -version 2>/dev/null | head -1
           df -h / /tmp | sed 's/^/  /'
 
-      - name: Write torrent parser
-        run: |
-          cat > /tmp/tinfo.py <<'PYEOF'
-          import sys, json
-          def dec(b, i=0):
-              c = b[i:i+1]
-              if c == b'i':
-                  j = b.index(b'e', i); return int(b[i+1:j]), j + 1
-              if c == b'l':
-                  i += 1; out = []
-                  while b[i:i+1] != b'e':
-                      v, i = dec(b, i); out.append(v)
-                  return out, i + 1
-              if c == b'd':
-                  i += 1; out = {}
-                  while b[i:i+1] != b'e':
-                      k, i = dec(b, i); v, i = dec(b, i); out[k] = v
-                  return out, i + 1
-              j = b.index(b':', i); n = int(b[i:j]); return b[j+1:j+1+n], j + 1 + n
-          data = open(sys.argv[1], 'rb').read()
-          d, _ = dec(data)
-          info = d[b'info']
-          files = []
-          if b'files' in info:
-              for f in info[b'files']:
-                  files.append({'path': b'/'.join(f[b'path']).decode('utf-8', 'replace'),
-                                'size': f[b'length']})
-          else:
-              files.append({'path': info.get(b'name', b'?').decode('utf-8', 'replace'),
-                            'size': info[b'length']})
-          print(json.dumps({'name': info.get(b'name', b'?').decode('utf-8', 'replace'),
-                            'files': files}))
-          PYEOF
-
       - name: Probe each candidate
         env:
           CANDIDATES: ${{ inputs.candidates }}
-          EPISODE: ${{ inputs.episode }}
+          TARGET: ${{ inputs.target }}
           MAXWAIT: ${{ inputs.maxwait }}
         run: |
           set -u
@@ -90,30 +55,17 @@ jobs:
               echo "  !! torrent fetch failed"
               continue
             fi
-            python3 /tmp/tinfo.py "$ID.torrent" > "$ID.json" || { echo "  !! parse failed"; continue; }
-            NAME=$(python3 -c "import json;print(json.load(open('$ID.json'))['name'])")
-            echo "  torrent name: $NAME"
-            python3 - "$ID.json" "$EPISODE" <<'PYEOF' > "$ID.pick"
-          import json, re, sys
-          d = json.load(open(sys.argv[1]))
-          pat = re.compile(sys.argv[2], re.I)
-          excl = re.compile(r'OVA|NCOP|NCED|Promo|Special|Extra|Menu|Preview', re.I)
-          hits = [(i, f) for i, f in enumerate(d['files'], 1)
-                  if pat.search(f['path']) and not excl.search(f['path'])]
-          if not hits:
-              hits = [(i, f) for i, f in enumerate(d['files'], 1)
-                      if re.search(r'S01E0?1\b', f['path'], re.I) and not excl.search(f['path'])]
-          i, f = hits[0]
-          print(i)
-          print(f['path'])
-          print(f['size'])
-          print(f['path'].split('/')[-1])
-          PYEOF
-            IDX=$(sed -n 1p "$ID.pick")
-            FNAME=$(sed -n 2p "$ID.pick")
-            FSIZE=$(sed -n 3p "$ID.pick")
-            BASENAME=$(sed -n 4p "$ID.pick")
-            echo "  picking file #$IDX  $FNAME  ($FSIZE bytes)"
+            echo "  --- aria2 file listing (first 20) ---"
+            aria2c --show-files "$ID.torrent" 2>/dev/null | head -20 | sed 's/^/    /'
+            echo "  --- picking file matching '$TARGET' ---"
+            LINE=$(aria2c --show-files "$ID.torrent" 2>/dev/null | grep -F "$TARGET" | head -1)
+            if [ -z "$LINE" ]; then
+              echo "  !! no file matching '$TARGET'"
+              continue
+            fi
+            IDX=$(echo "$LINE" | awk '{print $1}')
+            FNAME=$(echo "$LINE" | awk '{print $2}')
+            echo "  picked index=$IDX  file=$FNAME"
             mkdir -p "d$ID"
             aria2c --dir="d$ID" --select-file="$IDX" --allow-overwrite=true \
               --auto-file-renaming=false --file-allocation=none --bt-enable-lpd=true \
@@ -126,30 +78,17 @@ jobs:
               --console-log-level=warn --log="$ID.aria2.log" \
               "$ID.torrent" > /dev/null 2>&1 &
             ARIA_PID=$!
-            echo "  aria2 pid $ARIA_PID, waiting for the file to reach full size"
+            echo "  aria2 pid $ARIA_PID, waiting for completion"
             DEADLINE=$(( $(date +%s) + MAXWAIT ))
-            DONE=0
             while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-              if ! kill -0 "$ARIA_PID" 2>/dev/null; then
-                DONE=1
-                break
-              fi
-              CUR=$(find "d$ID" -type f -name "*${BASENAME}" -printf '%s\n' 2>/dev/null | head -1)
-              if [ -n "${CUR:-}" ] && [ "$CUR" -ge "$FSIZE" ]; then
-                DONE=1
-                break
-              fi
+              if ! kill -0 "$ARIA_PID" 2>/dev/null; then break; fi
               sleep 5
             done
             kill "$ARIA_PID" 2>/dev/null || true
             wait "$ARIA_PID" 2>/dev/null || true
-            echo "  download finished (complete=$DONE)"
             echo "  --- files on disk ---"
-            find "d$ID" -type f -printf '    %12s  %p\n' | sort -k2 | head -10
-            FOUND=$(find "d$ID" -type f -name "*${BASENAME}" | head -1)
-            if [ -z "$FOUND" ]; then
-              FOUND=$(find "d$ID" -type f \( -name '*.mkv' -o -name '*.mp4' \) -size +10M | head -1)
-            fi
+            find "d$ID" -type f -printf '    %12s  %f\n' | sort -k2 | head -10
+            FOUND=$(find "d$ID" -type f -size +10M | head -1)
             if [ -z "$FOUND" ]; then
               echo "  !! no episode file downloaded (no live peers?)"
               tail -12 "$ID.aria2.log" 2>/dev/null | sed 's/^/     /'
@@ -159,17 +98,27 @@ jobs:
             {
               echo ""
               echo "### candidate $ID"
-              echo "- torrent: $NAME"
               echo "- file: $FNAME"
               echo ""
               echo '```'
               ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height:stream_tags=language,title -of default=nw=1 "$FOUND"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "  --- streams ---"
+            echo "  --- all streams ---"
             ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height:stream_tags=language,title -of default=nw=1 "$FOUND" | sed 's/^/     /'
-            echo "  --- subtitle stream detail ---"
+            echo "  --- subtitle tracks only ---"
             ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of default=nw=1 "$FOUND" | sed 's/^/     /'
+            echo "  --- extract every subtitle track to srt ---"
+            mkdir -p srt
+            NS=$(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$FOUND" | wc -l)
+            echo "     subtitle stream count: $NS"
+            for S in $(ffprobe -v error -select_streams s -show_entries stream=index -of csv=p=0 "$FOUND"); do
+              LANG=$(ffprobe -v error -select_streams "s:$S" -show_entries stream_tags=language,title -of default=nw=1 "$FOUND" | tr '\n' ' ')
+              ffmpeg -v error -y -i "$FOUND" -map "0:$S" "srt/${ID}_s${S}.srt" 2>&1 | head -2 || true
+              SZ=$(stat -c%s "srt/${ID}_s${S}.srt" 2>/dev/null || echo 0)
+              echo "     stream $S  tags=[$LANG]  extracted=${SZ}B"
+            done
+            ls -l srt/ | tail -8 | sed 's/^/     /'
             STEM="frames/${ID}"
             ffmpeg -v error -y -ss 420 -i "$FOUND" -frames:v 1 "${STEM}_a.png" 2>&1 | head -2 || true
             ffmpeg -v error -y -ss 1200 -i "$FOUND" -frames:v 1 "${STEM}_b.png" 2>&1 | head -2 || true
@@ -179,11 +128,15 @@ jobs:
           echo ""
           echo "### frames"
           ls -l frames/ | sed 's/^/  /'
+          echo "### srt"
+          ls -l srt/ | sed 's/^/  /'
 
-      - name: Upload frames
+      - name: Upload frames and srt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: subtitle-probe-frames
-          path: /tmp/probe/frames/
+          name: subtitle-probe
+          path: |
+            /tmp/probe/frames/
+            /tmp/probe/srt/
           if-no-files-found: ignore
