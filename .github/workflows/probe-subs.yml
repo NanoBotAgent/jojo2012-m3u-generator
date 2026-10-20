@@ -6,11 +6,7 @@ on:
       candidates:
         description: 'Comma separated nyaa torrent IDs to probe'
         required: false
-        default: '1299586'
-      pattern:
-        description: 'Wildcard pattern for the episode file (aria2 --select-file)'
-        required: false
-        default: '*S01E01.mkv'
+        default: '1299586,1681123'
       maxwait:
         description: 'Seconds to wait for the episode file to complete'
         required: false
@@ -33,7 +29,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg aria2
           echo "ffprobe: $(command -v ffprobe || echo MISSING)"
-          echo "aria2c : $(command -v aria2c || echo MISSING)"
           aria2c --version | head -1
           ffprobe -version 2>/dev/null | head -1
           df -h / /tmp | sed 's/^/  /'
@@ -41,7 +36,6 @@ jobs:
       - name: Probe each candidate
         env:
           CANDIDATES: ${{ inputs.candidates }}
-          PATTERN: ${{ inputs.pattern }}
           MAXWAIT: ${{ inputs.maxwait }}
         run: |
           set -u
@@ -56,11 +50,52 @@ jobs:
               echo "  !! torrent fetch failed"
               continue
             fi
-            echo "  --- listing lines matching $PATTERN ---"
-            aria2c --show-files "$ID.torrent" 2>/dev/null | grep -i "S01E01" | head -3 | cut -c1-190 | sed 's/^/    /'
+            aria2c --show-files "$ID.torrent" 2>/dev/null > "$ID.files"
+            echo "  --- episode 1 candidates in listing ---"
+            grep -iE "S01E01| - 01\.mkv|S1.*01\.mkv" "$ID.files" | head -3 | cut -c1-190 | sed 's/^/    /'
+            python3 - "$ID.files" <<'PYEOF' > "$ID.pick"
+          import re, sys
+          rows = []
+          for line in open(sys.argv[1], encoding='utf-8', errors='replace'):
+              line = line.rstrip('\n')
+              if '|' not in line:
+                  continue
+              head, path = line.split('|', 1)
+              head = head.strip()
+              if not head.isdigit():
+                  continue
+              rows.append((int(head), path.strip()))
+          excl = re.compile(r'OVA|NCOP|NCED|Promo|Special|Extra|Menu|Preview', re.I)
+          def ok(p):
+              return not excl.search(p)
+          picked = None
+          for pat in (r'S01E0?1\b', r'[-_ ]0?1\.mkv$'):
+              cand = [r for r in rows if re.search(pat, r[1], re.I) and ok(r[1])]
+              if cand:
+                  picked = cand[0]
+                  break
+          if picked is None:
+              cand = [r for r in rows if ok(r[1]) and r[1].lower().endswith('.mkv')]
+              if cand:
+                  picked = cand[0]
+          if picked is None:
+              print('NONE')
+              raise SystemExit
+          print(picked[0])
+          print(picked[1])
+          print(picked[1].split('/')[-1])
+          PYEOF
+            IDX=$(sed -n 1p "$ID.pick")
+            if [ "$IDX" = "NONE" ]; then
+              echo "  !! no episode file found in listing"
+              continue
+            fi
+            FNAME=$(sed -n 2p "$ID.pick")
+            BASENAME=$(sed -n 3p "$ID.pick")
+            echo "  picked index=$IDX"
+            echo "  path=$FNAME"
             mkdir -p "d$ID"
-            set +e
-            aria2c --dir="d$ID" --select-file="$PATTERN" \
+            aria2c --dir="d$ID" --select-file="$IDX" \
               --allow-overwrite=true --auto-file-renaming=false --file-allocation=none \
               --bt-enable-lpd=true --follow-torrent=mem --seed-time=0 \
               --bt-tracker="udp://tracker.opentrackr.org:1337/announce" \
@@ -72,7 +107,6 @@ jobs:
               --console-log-level=warn --log="$ID.aria2.log" --log-level=info \
               "$ID.torrent" > "$ID.aria2.out" 2>&1 &
             ARIA_PID=$!
-            set -e
             DEADLINE=$(( $(date +%s) + MAXWAIT ))
             while [ "$(date +%s)" -lt "$DEADLINE" ]; do
               if ! kill -0 "$ARIA_PID" 2>/dev/null; then break; fi
@@ -80,8 +114,10 @@ jobs:
             done
             kill "$ARIA_PID" 2>/dev/null || true
             wait "$ARIA_PID" 2>/dev/null || true
+            echo "  --- aria2 stdout tail ---"
+            tail -12 "$ID.aria2.out" 2>/dev/null | cut -c1-190 | sed 's/^/    /'
             echo "  --- aria2 log tail ---"
-            tail -20 "$ID.aria2.log" 2>/dev/null | cut -c1-190 | sed 's/^/    /'
+            tail -12 "$ID.aria2.log" 2>/dev/null | cut -c1-190 | sed 's/^/    /'
             echo "  --- files on disk ---"
             find "d$ID" -type f -printf '    %12s  %f\n' | sort -k2 | head -12
             FOUND=$(find "d$ID" -type f -printf '%s\t%p\n' | awk -F'\t' '$2 ~ /\.mkv$/ && $1 > 100000000 {print $2; exit}')
