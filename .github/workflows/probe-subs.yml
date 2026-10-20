@@ -6,11 +6,15 @@ on:
       candidates:
         description: 'Comma separated nyaa torrent IDs to probe'
         required: false
-        default: '1299586,1470445,1681123,2091897'
+        default: '1299586,1681123,1470445'
       episode:
         description: 'Regex to pick the episode file inside each torrent'
         required: false
         default: 'S01E01'
+      maxwait:
+        description: 'Seconds to wait for each episode file to complete'
+        required: false
+        default: '900'
 
 permissions:
   contents: read
@@ -19,24 +23,20 @@ jobs:
   probe:
     name: Probe subtitle tracks
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Report runner tools
-        run: |
-          echo "### Runner tools" >> "$GITHUB_STEP_SUMMARY"
-          { echo "- ffmpeg: $(ffmpeg -version 2>/dev/null | head -1 || echo MISSING)"; \
-            echo "- ffprobe: $(ffprobe -version 2>/dev/null | head -1 || echo MISSING)"; \
-            echo "- aria2c: $(aria2c --version 2>/dev/null | head -1 || echo MISSING)"; \
-            echo "- free space:"; df -h / /tmp | sed 's/^/  /'; } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Install aria2
+      - name: Install ffmpeg and aria2
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq aria2
-          aria2c --version | head -1
+          sudo apt-get install -y -qq ffmpeg aria2
+          echo "ffprobe: $(command -v ffprobe || echo MISSING)"
+          echo "ffmpeg : $(command -v ffmpeg || echo MISSING)"
+          echo "aria2c : $(command -v aria2c || echo MISSING)"
+          ffprobe -version 2>/dev/null | head -1
+          df -h / /tmp | sed 's/^/  /'
 
       - name: Write torrent parser
         run: |
@@ -76,9 +76,10 @@ jobs:
         env:
           CANDIDATES: ${{ inputs.candidates }}
           EPISODE: ${{ inputs.episode }}
+          MAXWAIT: ${{ inputs.maxwait }}
         run: |
           set -u
-          mkdir -p /tmp/probe
+          mkdir -p /tmp/probe/frames
           cd /tmp/probe
           for ID in ${CANDIDATES//,/ }; do
             ID=$(echo "$ID" | tr -d ' ')
@@ -96,44 +97,65 @@ jobs:
           import json, re, sys
           d = json.load(open(sys.argv[1]))
           pat = re.compile(sys.argv[2], re.I)
-          hits = [(i, f) for i, f in enumerate(d['files'], 1) if pat.search(f['path'])]
+          excl = re.compile(r'OVA|NCOP|NCED|Promo|Special|Extra|Menu|Preview', re.I)
+          hits = [(i, f) for i, f in enumerate(d['files'], 1)
+                  if pat.search(f['path']) and not excl.search(f['path'])]
           if not hits:
-              hits = [(i, f) for i, f in enumerate(d['files'], 1) if re.search(r'S01E0?1\b', f['path'], re.I)]
-          if not hits:
-              hits = [(1, d['files'][0])]
+              hits = [(i, f) for i, f in enumerate(d['files'], 1)
+                      if re.search(r'S01E0?1\b', f['path'], re.I) and not excl.search(f['path'])]
           i, f = hits[0]
           print(i)
           print(f['path'])
           print(f['size'])
+          print(f['path'].split('/')[-1])
           PYEOF
-            IDX=$(sed -n 1p "$ID.pick"); FNAME=$(sed -n 2p "$ID.pick"); FSIZE=$(sed -n 3p "$ID.pick")
+            IDX=$(sed -n 1p "$ID.pick")
+            FNAME=$(sed -n 2p "$ID.pick")
+            FSIZE=$(sed -n 3p "$ID.pick")
+            BASENAME=$(sed -n 4p "$ID.pick")
             echo "  picking file #$IDX  $FNAME  ($FSIZE bytes)"
             mkdir -p "d$ID"
-            timeout 2400 aria2c \
-              --dir="d$ID" \
-              --select-file="$IDX" \
-              --allow-overwrite=true \
-              --auto-file-renaming=false \
-              --file-allocation=none \
-              --bt-enable-lpd=true \
+            aria2c --dir="d$ID" --select-file="$IDX" --allow-overwrite=true \
+              --auto-file-renaming=false --file-allocation=none --bt-enable-lpd=true \
               --bt-tracker="udp://tracker.opentrackr.org:1337/announce" \
               --bt-tracker="udp://open.stealth.si:80/announce" \
               --bt-tracker="udp://tracker.torrent.eu.org:451/announce" \
               --bt-tracker="udp://exodus.desync.com:6969/announce" \
               --bt-tracker="udp://tracker.coppersurfer.tk:6969/announce" \
-              --connect-timeout=30 \
-              --timeout=60 \
-              --summary-interval=30 \
-              --console-log-level=warn \
-              --log="$ID.aria2.log" \
-              "$ID.torrent" 2>&1 | tail -5 || echo "  !! aria2 exited non zero"
-            FOUND=$(find "d$ID" -type f \( -name '*.mkv' -o -name '*.mp4' -o -name '*.avi' \) | head -1)
+              --connect-timeout=30 --timeout=60 --summary-interval=20 \
+              --console-log-level=warn --log="$ID.aria2.log" \
+              "$ID.torrent" > /dev/null 2>&1 &
+            ARIA_PID=$!
+            echo "  aria2 pid $ARIA_PID, waiting for the file to reach full size"
+            DEADLINE=$(( $(date +%s) + MAXWAIT ))
+            DONE=0
+            while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+              if ! kill -0 "$ARIA_PID" 2>/dev/null; then
+                DONE=1
+                break
+              fi
+              CUR=$(find "d$ID" -type f -name "*${BASENAME}" -printf '%s\n' 2>/dev/null | head -1)
+              if [ -n "${CUR:-}" ] && [ "$CUR" -ge "$FSIZE" ]; then
+                DONE=1
+                break
+              fi
+              sleep 5
+            done
+            kill "$ARIA_PID" 2>/dev/null || true
+            wait "$ARIA_PID" 2>/dev/null || true
+            echo "  download finished (complete=$DONE)"
+            echo "  --- files on disk ---"
+            find "d$ID" -type f -printf '    %12s  %p\n' | sort -k2 | head -10
+            FOUND=$(find "d$ID" -type f -name "*${BASENAME}" | head -1)
+            if [ -z "$FOUND" ]; then
+              FOUND=$(find "d$ID" -type f \( -name '*.mkv' -o -name '*.mp4' \) -size +10M | head -1)
+            fi
             if [ -z "$FOUND" ]; then
               echo "  !! no episode file downloaded (no live peers?)"
               tail -12 "$ID.aria2.log" 2>/dev/null | sed 's/^/     /'
               continue
             fi
-            echo "  downloaded: $FOUND ($(stat -c%s "$FOUND") bytes)"
+            echo "  probing: $FOUND ($(stat -c%s "$FOUND") bytes)"
             {
               echo ""
               echo "### candidate $ID"
@@ -145,12 +167,13 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "  --- streams ---"
-            ffprobe -v error -show_entries stream=index,codec_type,codec_name:stream_tags=language,title -of default=nw=1 "$FOUND" | sed 's/^/     /'
-            mkdir -p frames
-            BASE=$(basename "$FOUND")
-            ffmpeg -v error -y -ss 300 -i "$FOUND" -frames:v 1 "frames/${ID}_${BASE%.*}.png" 2>&1 | head -3 || true
-            ffmpeg -v error -y -ss 900 -i "$FOUND" -frames:v 1 "frames/${ID}_${BASE%.*}_900.png" 2>&1 | head -3 || true
-            ls -l frames/ | tail -4 | sed 's/^/     /'
+            ffprobe -v error -show_entries stream=index,codec_type,codec_name,width,height:stream_tags=language,title -of default=nw=1 "$FOUND" | sed 's/^/     /'
+            echo "  --- subtitle stream detail ---"
+            ffprobe -v error -select_streams s -show_entries stream=index,codec_name:stream_tags=language,title -of default=nw=1 "$FOUND" | sed 's/^/     /'
+            STEM="frames/${ID}"
+            ffmpeg -v error -y -ss 420 -i "$FOUND" -frames:v 1 "${STEM}_a.png" 2>&1 | head -2 || true
+            ffmpeg -v error -y -ss 1200 -i "$FOUND" -frames:v 1 "${STEM}_b.png" 2>&1 | head -2 || true
+            ls -l frames/ | tail -6 | sed 's/^/     /'
             rm -rf "d$ID"
           done
           echo ""
@@ -158,6 +181,7 @@ jobs:
           ls -l frames/ | sed 's/^/  /'
 
       - name: Upload frames
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: subtitle-probe-frames
