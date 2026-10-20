@@ -42,10 +42,28 @@ def probe(path):
     """Return the ffprobe description of a media file."""
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
-         "format=duration:stream=index,codec_type,codec_name,width,height:stream_tags=language,title",
+         "format=duration:stream=index,codec_type,codec_name,duration,width,height:stream_tags=language,title",
          "-of", "json", path],
         capture_output=True, text=True, check=True).stdout
     return json.loads(out)
+
+
+def video_duration(data):
+    """Length of the video track, falling back to the container length.
+
+    The container length of these MKVs runs about ten seconds past the video
+    track itself, so the track is what the remux has to match.
+    """
+    for stream in data.get("streams", []):
+        if stream.get("codec_type") != "video":
+            continue
+        try:
+            value = float(stream.get("duration"))
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+    return float(data.get("format", {}).get("duration", 0) or 0)
 
 
 def stream_label(stream):
@@ -137,7 +155,12 @@ def remux(source, dest, subtitle_index):
 
 
 def verify_output(path, source_duration):
-    """Confirm the result is 1080p video with audio and one soft subtitle track."""
+    """Confirm the result is 1080p video with audio and one soft subtitle track.
+
+    The lengths are compared with the source video track. The container length
+    of the source runs about ten seconds past the video track, so it is not a
+    fair yardstick.
+    """
     data = probe(path)
     streams = data.get("streams", [])
     video = [s for s in streams if s.get("codec_type") == "video"]
@@ -158,11 +181,12 @@ def verify_output(path, source_duration):
     duration = float(data.get("format", {}).get("duration", 0))
     if duration < 1000 or duration > 1800:
         raise SystemExit("::error::Unexpected duration %.0f s" % duration)
-    if source_duration and abs(duration - source_duration) > 5:
-        raise SystemExit("::error::Duration moved by %.1f s" % (duration - source_duration))
-    log("  verified: %s %dx%d, %d audio track(s), %s subtitle track, %.0f s long"
+    if source_duration and abs(video_duration(data) - source_duration) > 2:
+        raise SystemExit("::error::Video track is %.1f s off the source"
+                         % (video_duration(data) - source_duration))
+    log("  verified: %s %dx%d, %d audio track(s), %s subtitle track, %.0f s long (source track %.0f s)"
         % (video[0].get("codec_name"), EXPECTED_WIDTH, EXPECTED_HEIGHT, len(audio),
-           subs[0].get("codec_name"), duration))
+           subs[0].get("codec_name"), duration, source_duration))
 
 
 def extract_soft_subtitle(video, dest):
@@ -255,7 +279,10 @@ def cmd_episode(args):
         source = download_episode(torrent, ep["index"], os.path.join(workdir, "src"),
                                   args.episode)
 
-        source_duration = float(probe(source).get("format", {}).get("duration", 0))
+        source_data = probe(source)
+        source_duration = video_duration(source_data)
+        log("  source: %.0f s container, %.0f s video track"
+            % (float(source_data.get("format", {}).get("duration", 0) or 0), source_duration))
         chosen = pick_subtitle(source, args.subtitle_track)
 
         ass = extract_subtitle(source, os.path.join(workdir, "subs.ass"), chosen["index"])
