@@ -55,23 +55,31 @@ def run(cmd, **kwargs):
 
 
 def workdir_root():
-    """Pick the volume with the most free space."""
+    """Pick the volume with the most free space that we can actually write to.
+
+    Some runner images mount /mnt read-only or owned by root, so writability
+    is probed rather than assumed.
+    """
     candidates = ["/mnt", "/tmp", os.environ.get("WORK_DIR") or "/tmp"]
-    best = None
+    writable = []
     for path in candidates:
         if not path:
             continue
         try:
             os.makedirs(path, exist_ok=True)
-            free = shutil.disk_usage(path).free
+            probe = os.path.join(path, ".jojo-write-probe")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            os.remove(probe)
+            writable.append((path, shutil.disk_usage(path).free))
         except OSError:
             continue
-        if best is None or free > best[1]:
-            best = (path, free)
-    if best is None:
-        raise SystemExit("::error::No usable work directory")
-    log("  work root: %s (%.1f GB free)" % (best[0], best[1] / 1073741824.0))
-    return best[0]
+    if not writable:
+        raise SystemExit("::error::No writable work directory")
+    writable.sort(key=lambda item: item[1], reverse=True)
+    for path, free in writable:
+        log("  work root: %s (%.1f GB free)" % (path, free / 1073741824.0))
+    return writable[0][0]
 
 
 def bdecode(data, i=0):
