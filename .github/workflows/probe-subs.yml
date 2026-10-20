@@ -118,9 +118,11 @@ jobs:
             grep -E "OK  \||ERR|error" "$ID.aria2.out" | head -4 | cut -c1-200 | sed 's/^/    /'
             echo "  --- files on disk ---"
             find "d$ID" -type f -printf '    %12s  %f\n' | sort -k2 | head -12
-            FOUND=$(find "d$ID" -type f -name "${BASENAME}" | head -1)
+            FOUND=$(find "d$ID" -type f -name "*.mkv" -printf '%s\t%p\n' \
+              | awk -F'\t' '$1 > 100000000 && ($2 ~ / - 0?1\.mkv$/ || $2 ~ /S01E0?1\.mkv$/) {print $2; exit}')
             if [ -z "$FOUND" ]; then
-              FOUND=$(find "d$ID" -type f -name "*.mkv" -printf '%s\t%p\n' | awk -F'\t' '$1 > 100000000 {print $2; exit}')
+              FOUND=$(find "d$ID" -type f -name "*.mkv" -printf '%s\t%p\n' \
+                | awk -F'\t' '$1 > 100000000 {print $2; exit}')
             fi
             if [ -z "$FOUND" ]; then
               echo "  !! no episode file on disk"
